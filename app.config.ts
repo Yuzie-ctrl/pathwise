@@ -2,13 +2,13 @@ import type { ConfigContext, ExpoConfig } from '@expo/config';
 
 export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
-  name: 'Your App Name',
-  slug: 'your-app-slug',
+  name: 'Pathwise',
+  slug: 'pathwise',
   newArchEnabled: true,
   version: '1.0.0',
   orientation: 'portrait',
   userInterfaceStyle: 'automatic',
-  scheme: 'yourapp',
+  scheme: 'pathwise',
   runtimeVersion: {
     policy: 'appVersion',
   },
@@ -18,10 +18,10 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       ITSAppUsesNonExemptEncryption: false,
     },
     supportsTablet: true,
-    bundleIdentifier: 'com.yourcompany.yourapp',
+    bundleIdentifier: 'me.bilt.pathwise',
   },
   android: {
-    package: 'com.yourcompany.yourapp',
+    package: 'me.bilt.pathwise',
   },
   plugins: [
     'expo-router',
