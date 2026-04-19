@@ -156,10 +156,13 @@ export default function MapView({
 
   const provider = tileProvider(mapType);
 
-  const height =
+  const explicitHeight =
     typeof style === 'object' && style !== null && 'height' in style
       ? (style.height as number)
       : undefined;
+  // Prefer measured viewport height so a flex:1 container fills the screen.
+  const mapHeight = viewport.height || explicitHeight || 400;
+  const mapWidth = viewport.width || undefined;
 
   // Build SVG polylines
   const svgPaths = useMemo(() => {
@@ -196,7 +199,7 @@ export default function MapView({
 
   return (
     <View
-      style={style}
+      style={[{ flex: 1, overflow: 'hidden' }, style]}
       className={className}
       onLayout={(e) =>
         setViewport({
@@ -217,7 +220,8 @@ export default function MapView({
         minZoom={minZoomLevel}
         maxZoom={maxZoomLevel}
         zoomSnap={zoomEnabled}
-        height={height ?? 400}
+        height={mapHeight}
+        width={mapWidth}
       >
         {markers
           .filter((m) => !m.badgeText)
