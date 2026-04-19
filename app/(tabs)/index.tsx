@@ -179,6 +179,9 @@ export default function Home() {
   useEffect(() => {
     if (navigating) return;
     if (stops.length < 2) return;
+    // When the active leg is a freehand drawing, don't auto-fit — the user just
+    // drew it and any camera change would visually reflow/shift the view.
+    if (drawnRoute) return;
     const valid = stops.filter((s) => s.latitude !== 0 || s.longitude !== 0);
     if (valid.length < 2) return;
     const lats = valid.map((s) => s.latitude);
@@ -195,7 +198,7 @@ export default function Home() {
       latitudeDelta: latDelta,
       longitudeDelta: lonDelta,
     });
-  }, [stops, navigating]);
+  }, [stops, navigating, drawnRoute]);
 
   // ---------------------------------------------------------------------
   // Derived map data
@@ -425,7 +428,9 @@ export default function Home() {
       }
 
       setDrawing(false);
-      setPlannerCollapsed(false);
+      // Open the planner collapsed — user can tap the grabber to expand.
+      // Also don't auto-fit camera (would zoom in and visually shift the drawn line).
+      setPlannerCollapsed(true);
     } catch {
       Alert.alert('Ошибка', 'Не удалось построить маршрут по рисунку');
     } finally {

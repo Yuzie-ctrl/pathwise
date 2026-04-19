@@ -63,9 +63,21 @@ export function DrawCanvas({
     (x: number, y: number) => {
       const { width, height } = size;
       if (!width || !height) return { latitude: 0, longitude: 0 };
-      const { latitude, longitude, latitudeDelta, longitudeDelta } = region;
-      const lng = longitude + ((x - width / 2) / width) * longitudeDelta;
-      const lat = latitude - ((y - height / 2) / height) * latitudeDelta;
+      // Web Mercator — matches pigeon-maps / Leaflet so drawn strokes stay
+      // anchored when the map pans or zooms.
+      const { latitude, longitude, latitudeDelta } = region;
+      const tileSize = 256;
+      const zoom = Math.log2(360 / latitudeDelta);
+      const scale = Math.pow(2, zoom) * tileSize;
+      const sinC = Math.sin((latitude * Math.PI) / 180);
+      const cxWorld = ((longitude + 180) / 360) * scale;
+      const cyWorld =
+        (0.5 - Math.log((1 + sinC) / (1 - sinC)) / (4 * Math.PI)) * scale;
+      const worldX = cxWorld + (x - width / 2);
+      const worldY = cyWorld + (y - height / 2);
+      const lng = (worldX / scale) * 360 - 180;
+      const n = Math.PI - (2 * Math.PI * worldY) / scale;
+      const lat = (180 / Math.PI) * Math.atan(Math.sinh(n));
       return { latitude: lat, longitude: lng };
     },
     [region, size],
@@ -75,10 +87,20 @@ export function DrawCanvas({
     (lat: number, lng: number) => {
       const { width, height } = size;
       if (!width || !height) return { x: 0, y: 0 };
-      const { latitude, longitude, latitudeDelta, longitudeDelta } = region;
-      const x = ((lng - longitude) / longitudeDelta) * width + width / 2;
-      const y = ((latitude - lat) / latitudeDelta) * height + height / 2;
-      return { x, y };
+      const { latitude, longitude, latitudeDelta } = region;
+      const tileSize = 256;
+      const zoom = Math.log2(360 / latitudeDelta);
+      const scale = Math.pow(2, zoom) * tileSize;
+      const project = (la: number, ln: number) => {
+        const sin = Math.sin((la * Math.PI) / 180);
+        const px = ((ln + 180) / 360) * scale;
+        const py =
+          (0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI)) * scale;
+        return [px, py] as const;
+      };
+      const [cx, cy] = project(latitude, longitude);
+      const [px, py] = project(lat, lng);
+      return { x: px - cx + width / 2, y: py - cy + height / 2 };
     },
     [region, size],
   );
