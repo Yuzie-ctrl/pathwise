@@ -81,10 +81,19 @@ interface OsrmRoute {
   }[];
 }
 
+export interface DrawnRouteOverride {
+  fromStopId: string;
+  toStopId: string;
+  coordinates: { latitude: number; longitude: number }[];
+  distanceMeters: number;
+  durationSeconds: number;
+}
+
 export async function fetchRoute(
   stops: TripStop[],
   mode: TransportMode,
   signal?: AbortSignal,
+  drawnRoute?: DrawnRouteOverride | null,
 ): Promise<RouteLeg[]> {
   if (stops.length < 2) return [];
 
@@ -97,6 +106,29 @@ export async function fetchRoute(
   for (let i = 0; i < stops.length - 1; i++) {
     const a = stops[i];
     const b = stops[i + 1];
+
+    // If this leg matches the drawn-route override, use its geometry as-is.
+    if (
+      drawnRoute &&
+      drawnRoute.fromStopId === a.id &&
+      drawnRoute.toStopId === b.id &&
+      drawnRoute.coordinates.length >= 2
+    ) {
+      const coords = drawnRoute.coordinates.slice();
+      // Pin endpoints to stop coordinates.
+      coords[0] = { latitude: a.latitude, longitude: a.longitude };
+      coords[coords.length - 1] = {
+        latitude: b.latitude,
+        longitude: b.longitude,
+      };
+      legs.push({
+        distanceMeters: drawnRoute.distanceMeters,
+        durationSeconds: Math.round(drawnRoute.durationSeconds * multiplier),
+        coordinates: coords,
+      });
+      continue;
+    }
+
     const url = `https://router.project-osrm.org/route/v1/${profile}/${a.longitude},${a.latitude};${b.longitude},${b.latitude}?overview=full&geometries=geojson`;
     const res = await fetch(url, { signal });
     if (!res.ok) throw new Error(`Routing failed: ${res.status}`);
@@ -136,60 +168,161 @@ export interface MatchedPoint {
   longitude: number;
 }
 
+export interface MatchedRoute {
+  coordinates: MatchedPoint[];
+  distanceMeters: number;
+  durationSeconds: number;
+}
+
+/**
+ * Given a freehand drawn polyline, build a road-network route that follows
+ * the drawing as closely as possible.
+ *
+ * We do NOT use OSRM /match here because it aggressively smooths the path
+ * and often picks a shortcut between the start and end, ignoring the shape.
+ *
+ * Instead we sample the drawing into ~25 waypoints (by actual arc length so
+ * they're evenly spaced along the line, not clustered where the user was
+ * slow) and feed them to OSRM /route. OSRM is then forced to visit each
+ * waypoint, so the resulting road-following polyline traces the curve of
+ * the drawing — corners, detours and all.
+ */
 export async function matchDrawnRoute(
   points: { latitude: number; longitude: number }[],
   mode: TransportMode,
   signal?: AbortSignal,
-): Promise<MatchedPoint[]> {
-  if (points.length < 2) return points;
-  // OSRM /match officially accepts up to 100 points. Drop obvious duplicates
-  // (to respect the density limit) then downsample only if needed.
-  const dedup: { latitude: number; longitude: number }[] = [];
-  for (const p of points) {
-    const last = dedup[dedup.length - 1];
-    if (!last) {
-      dedup.push(p);
-      continue;
-    }
-    // ~11m at the equator for 0.0001°
-    const dLat = Math.abs(p.latitude - last.latitude);
-    const dLon = Math.abs(p.longitude - last.longitude);
-    if (dLat < 0.00005 && dLon < 0.00005) continue;
-    dedup.push(p);
+): Promise<MatchedRoute> {
+  if (points.length < 2) {
+    return { coordinates: points, distanceMeters: 0, durationSeconds: 0 };
   }
-  const sampled = downsample(dedup, 95);
+
+  // 1) Resample by arc length so the router gets evenly-spaced guidance
+  //    points. The public OSRM demo caps at ~100 coords per request; we
+  //    target fewer so the router has freedom between them (it still has to
+  //    pass through each one, just not every cm).
+  const resampled = resampleByDistance(points, 25);
+  if (resampled.length < 2) {
+    return { coordinates: points, distanceMeters: 0, durationSeconds: 0 };
+  }
+
   const profile = OSRM_PROFILES[mode];
-  const coords = sampled.map((p) => `${p.longitude},${p.latitude}`).join(';');
-  // Tighter radius → fewer wild snaps to far-away roads.
-  const radii = sampled.map(() => 25).join(';');
-  const url = `https://router.project-osrm.org/match/v1/${profile}/${coords}?overview=full&geometries=geojson&radiuses=${radii}&gaps=ignore&tidy=true`;
+  const coords = resampled
+    .map((p) => `${p.longitude},${p.latitude}`)
+    .join(';');
+  // Generous radius — the user's drawing is rarely on-road; we want OSRM to
+  // snap each waypoint to a nearby road, then route between them.
+  const radii = resampled.map(() => 80).join(';');
+  const url =
+    `https://router.project-osrm.org/route/v1/${profile}/${coords}` +
+    `?overview=full&geometries=geojson&continue_straight=false&radiuses=${radii}`;
+
   try {
     const res = await fetch(url, { signal });
-    if (!res.ok) throw new Error(`Match failed: ${res.status}`);
+    if (!res.ok) throw new Error(`Route failed: ${res.status}`);
     const data = (await res.json()) as {
       code: string;
-      matchings?: { geometry: { coordinates: [number, number][] } }[];
+      routes?: {
+        distance: number;
+        duration: number;
+        geometry: { coordinates: [number, number][] };
+      }[];
     };
-    if (data.code !== 'Ok' || !data.matchings?.length) throw new Error('No match');
-    const result: MatchedPoint[] = [];
-    for (const m of data.matchings) {
-      for (const [lon, lat] of m.geometry.coordinates) {
-        result.push({ latitude: lat, longitude: lon });
-      }
+    if (data.code !== 'Ok' || !data.routes?.length) {
+      throw new Error('No route');
     }
-    return result;
+    const r = data.routes[0];
+    const coords2 = r.geometry.coordinates.map(([lon, lat]) => ({
+      latitude: lat,
+      longitude: lon,
+    }));
+    return {
+      coordinates: coords2,
+      distanceMeters: r.distance,
+      durationSeconds: r.duration,
+    };
   } catch {
-    // Fallback to raw path
-    return sampled;
+    // Fallback: try /match, then raw drawn points.
+    try {
+      const matchCoords = resampled
+        .map((p) => `${p.longitude},${p.latitude}`)
+        .join(';');
+      const matchRadii = resampled.map(() => 30).join(';');
+      const matchUrl = `https://router.project-osrm.org/match/v1/${profile}/${matchCoords}?overview=full&geometries=geojson&radiuses=${matchRadii}&gaps=ignore&tidy=true`;
+      const res = await fetch(matchUrl, { signal });
+      const data = (await res.json()) as {
+        code: string;
+        matchings?: {
+          distance?: number;
+          duration?: number;
+          geometry: { coordinates: [number, number][] };
+        }[];
+      };
+      if (data.code === 'Ok' && data.matchings?.length) {
+        const result: MatchedPoint[] = [];
+        let dist = 0;
+        let dur = 0;
+        for (const m of data.matchings) {
+          for (const [lon, lat] of m.geometry.coordinates) {
+            result.push({ latitude: lat, longitude: lon });
+          }
+          dist += m.distance ?? 0;
+          dur += m.duration ?? 0;
+        }
+        return {
+          coordinates: result,
+          distanceMeters: dist,
+          durationSeconds: dur,
+        };
+      }
+    } catch {
+      // ignore
+    }
+    // Compute raw-line length as a last resort.
+    let rawDist = 0;
+    for (let i = 1; i < resampled.length; i++) {
+      rawDist += haversine(resampled[i - 1], resampled[i]);
+    }
+    return {
+      coordinates: resampled,
+      distanceMeters: rawDist,
+      durationSeconds: rawDist / 8.3, // ~30 km/h
+    };
   }
 }
 
-function downsample<T>(arr: T[], maxCount: number): T[] {
-  if (arr.length <= maxCount) return arr;
-  const step = arr.length / maxCount;
-  const out: T[] = [];
-  for (let i = 0; i < maxCount; i++) out.push(arr[Math.floor(i * step)]);
-  out.push(arr[arr.length - 1]);
+/**
+ * Resample a polyline to `targetCount` points spaced evenly by arc length.
+ * Always includes the first and last input points.
+ */
+function resampleByDistance(
+  points: { latitude: number; longitude: number }[],
+  targetCount: number,
+): { latitude: number; longitude: number }[] {
+  if (points.length <= 2) return points.slice();
+  // Cumulative distances
+  const cum: number[] = [0];
+  for (let i = 1; i < points.length; i++) {
+    cum.push(cum[i - 1] + haversine(points[i - 1], points[i]));
+  }
+  const total = cum[cum.length - 1];
+  if (total === 0) return [points[0], points[points.length - 1]];
+
+  const step = total / (targetCount - 1);
+  const out: { latitude: number; longitude: number }[] = [points[0]];
+  let j = 1;
+  for (let i = 1; i < targetCount - 1; i++) {
+    const target = step * i;
+    while (j < cum.length - 1 && cum[j] < target) j++;
+    const a = points[j - 1];
+    const b = points[j];
+    const segLen = cum[j] - cum[j - 1];
+    const t = segLen === 0 ? 0 : (target - cum[j - 1]) / segLen;
+    out.push({
+      latitude: a.latitude + (b.latitude - a.latitude) * t,
+      longitude: a.longitude + (b.longitude - a.longitude) * t,
+    });
+  }
+  out.push(points[points.length - 1]);
   return out;
 }
 

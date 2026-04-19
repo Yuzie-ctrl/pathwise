@@ -1,12 +1,12 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import {
+  PanResponder,
   Pressable,
   View,
-  type GestureResponderEvent,
   type LayoutChangeEvent,
 } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
-import { Check, Hand, Pencil, Sparkles, X } from 'lucide-react-native';
+import { Check, Sparkles, X } from 'lucide-react-native';
 
 import { Text } from '@/components/ui/text';
 import type { MapRegion } from '@/components/MapView.types';
@@ -20,29 +20,25 @@ interface DrawCanvasProps {
 }
 
 /**
- * Overlay canvas for freehand drawing on top of the map. Supports two modes:
- * - draw: single-finger gestures are captured and turned into a polyline.
- *   Multi-touch (2+ fingers) falls through to the map so users can pinch-zoom
- *   without leaving draw mode.
- * - pan: canvas lets all gestures through to the map so users can freely pan
- *   and zoom. Tap the pencil button to return to drawing.
+ * Native draw overlay.
  *
- * The drawn path is stored in lat/lng so that when the user pans/zooms the
- * map, the existing strokes stay anchored to real-world positions (they are
- * re-projected to pixel coordinates on every render).
+ * Gesture rules:
+ * - 1 finger → draw (PanResponder grabs).
+ * - 2+ fingers → overlay releases the responder and cancels the stroke so
+ *   the underlying Leaflet WebView receives pinch-zoom / two-finger pan.
+ *
+ * Strokes are stored in lat/lng so they stay anchored when the map is moved.
  */
 export function DrawCanvas({
   region,
   onCancel,
   onConfirm,
-  onRegionChange: _onRegionChange,
   processing,
 }: DrawCanvasProps) {
   const [size, setSize] = useState<{ width: number; height: number }>({
     width: 0,
     height: 0,
   });
-  // Stored in lat/lng so strokes stay anchored when the map is panned/zoomed.
   const [strokes, setStrokes] = useState<
     { latitude: number; longitude: number }[][]
   >([]);
@@ -50,7 +46,6 @@ export function DrawCanvas({
   const [currentStrokePx, setCurrentStrokePx] = useState<
     { x: number; y: number }[]
   >([]);
-  const [mode, setMode] = useState<'draw' | 'pan'>('draw');
 
   const onLayout = (e: LayoutChangeEvent) => {
     setSize({
@@ -85,37 +80,7 @@ export function DrawCanvas({
 
   const hasDrawn = strokes.length > 0 || currentStrokePx.length > 0;
 
-  // --- Gesture handling --------------------------------------------------
-
-  // Only claim the responder for single-finger gestures in draw mode.
-  const shouldSetResponder = (e: GestureResponderEvent) => {
-    if (mode !== 'draw') return false;
-    if (e.nativeEvent.touches && e.nativeEvent.touches.length > 1) return false;
-    return true;
-  };
-
-  const handleStart = (e: GestureResponderEvent) => {
-    const { locationX, locationY } = e.nativeEvent;
-    currentStrokeRef.current = [{ x: locationX, y: locationY }];
-    setCurrentStrokePx([{ x: locationX, y: locationY }]);
-  };
-
-  const handleMove = (e: GestureResponderEvent) => {
-    // If a second finger lands, abort the stroke so the pinch-zoom gesture
-    // can reach the underlying map on the next grant.
-    if (e.nativeEvent.touches && e.nativeEvent.touches.length > 1) {
-      currentStrokeRef.current = [];
-      setCurrentStrokePx([]);
-      return;
-    }
-    const { locationX, locationY } = e.nativeEvent;
-    const last = currentStrokeRef.current[currentStrokeRef.current.length - 1];
-    if (last && Math.hypot(locationX - last.x, locationY - last.y) < 3) return;
-    currentStrokeRef.current.push({ x: locationX, y: locationY });
-    setCurrentStrokePx([...currentStrokeRef.current]);
-  };
-
-  const commitStroke = () => {
+  const commitStroke = useCallback(() => {
     if (currentStrokeRef.current.length < 2) {
       currentStrokeRef.current = [];
       setCurrentStrokePx([]);
@@ -125,14 +90,48 @@ export function DrawCanvas({
     setStrokes((prev) => [...prev, latlng]);
     currentStrokeRef.current = [];
     setCurrentStrokePx([]);
+  }, [pxToLatLng]);
+
+  const cancelStroke = () => {
+    currentStrokeRef.current = [];
+    setCurrentStrokePx([]);
   };
 
-  const handleRelease = () => commitStroke();
-  const handleTerminate = () => commitStroke();
+  // PanResponder: only grab single-finger gestures. Release when a 2nd
+  // finger lands so the map underneath handles pinch/pan.
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: (e) =>
+          e.nativeEvent.touches.length === 1,
+        onMoveShouldSetPanResponder: (e) =>
+          e.nativeEvent.touches.length === 1,
+        onPanResponderTerminationRequest: () => true,
+        onPanResponderGrant: (e) => {
+          const { locationX, locationY } = e.nativeEvent;
+          currentStrokeRef.current = [{ x: locationX, y: locationY }];
+          setCurrentStrokePx([{ x: locationX, y: locationY }]);
+        },
+        onPanResponderMove: (e) => {
+          if (e.nativeEvent.touches.length > 1) {
+            cancelStroke();
+            return;
+          }
+          const { locationX, locationY } = e.nativeEvent;
+          const last =
+            currentStrokeRef.current[currentStrokeRef.current.length - 1];
+          if (last && Math.hypot(locationX - last.x, locationY - last.y) < 3)
+            return;
+          currentStrokeRef.current.push({ x: locationX, y: locationY });
+          setCurrentStrokePx([...currentStrokeRef.current]);
+        },
+        onPanResponderRelease: commitStroke,
+        onPanResponderTerminate: commitStroke,
+      }),
+    [commitStroke],
+  );
 
   const handleConfirm = () => {
-    // Flatten all strokes into a single polyline (in draw order). Single
-    // stroke is the common case.
     const flat = strokes.flat();
     const extra = currentStrokeRef.current.map((p) => pxToLatLng(p.x, p.y));
     const all = [...flat, ...extra];
@@ -146,9 +145,6 @@ export function DrawCanvas({
     setStrokes([]);
   };
 
-  // --- Render ------------------------------------------------------------
-
-  // Re-project all stored (lat/lng) strokes to the current pixel grid.
   const committedSvgPath = useMemo(() => {
     if (!size.width || !size.height) return '';
     return strokes
@@ -182,12 +178,10 @@ export function DrawCanvas({
         right: 0,
         bottom: 0,
       }}
-      // In pan mode the whole overlay becomes transparent to touches (except
-      // the floating UI buttons, which opt back in via their own views).
       pointerEvents="box-none"
       onLayout={onLayout}
     >
-      {/* Semi-transparent tint so user knows they're in draw mode */}
+      {/* Faint tint */}
       <View
         pointerEvents="none"
         style={{
@@ -196,28 +190,16 @@ export function DrawCanvas({
           left: 0,
           right: 0,
           bottom: 0,
-          backgroundColor:
-            mode === 'draw'
-              ? 'rgba(37, 99, 235, 0.04)'
-              : 'rgba(37, 99, 235, 0.015)',
+          backgroundColor: 'rgba(37, 99, 235, 0.03)',
         }}
       />
 
-      {/* Gesture capture — only active in draw mode */}
-      {mode === 'draw' ? (
-        <View
-          style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
-          onStartShouldSetResponder={shouldSetResponder}
-          onMoveShouldSetResponder={shouldSetResponder}
-          onResponderGrant={handleStart}
-          onResponderMove={handleMove}
-          onResponderRelease={handleRelease}
-          onResponderTerminate={handleTerminate}
-          onResponderTerminationRequest={() => true}
-        />
-      ) : null}
+      {/* Gesture capture */}
+      <View
+        style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
+        {...panResponder.panHandlers}
+      />
 
-      {/* SVG overlay — always on, renders strokes regardless of mode */}
       {size.width > 0 && (committedSvgPath || currentSvgPath) ? (
         <Svg
           width={size.width}
@@ -248,7 +230,6 @@ export function DrawCanvas({
         </Svg>
       ) : null}
 
-      {/* Top hint */}
       <View
         pointerEvents="box-none"
         style={{ position: 'absolute', top: 16, left: 16, right: 16 }}
@@ -265,51 +246,13 @@ export function DrawCanvas({
         >
           <Sparkles size={16} color="#2563eb" />
           <Text className="flex-1 text-sm text-foreground">
-            {mode === 'pan'
-              ? 'Двигайте и приближайте карту — рисунок останется на месте'
-              : hasDrawn
-                ? 'ИИ подстроит маршрут под дороги · двумя пальцами можно зумить'
-                : 'Рисуйте пальцем · двумя пальцами — зум, или переключитесь в «двигать»'}
+            {hasDrawn
+              ? 'ИИ построит маршрут строго по вашей линии'
+              : 'Одним пальцем — рисуйте, двумя — двигайте и приближайте'}
           </Text>
         </View>
       </View>
 
-      {/* Mode toggle (right side) */}
-      <View
-        pointerEvents="box-none"
-        style={{
-          position: 'absolute',
-          right: 16,
-          top: 80,
-          gap: 8,
-        }}
-      >
-        <Pressable
-          onPress={() => setMode((m) => (m === 'draw' ? 'pan' : 'draw'))}
-          className="h-12 w-12 items-center justify-center rounded-full bg-card active:bg-muted"
-          style={{
-            shadowColor: '#000',
-            shadowOffset: { width: 0, height: 2 },
-            shadowOpacity: 0.18,
-            shadowRadius: 6,
-            elevation: 6,
-            backgroundColor: mode === 'draw' ? '#2563eb' : '#ffffff',
-          }}
-          accessibilityLabel={
-            mode === 'draw'
-              ? 'Переключиться в режим движения карты'
-              : 'Переключиться в режим рисования'
-          }
-        >
-          {mode === 'draw' ? (
-            <Pencil size={20} color="#ffffff" />
-          ) : (
-            <Hand size={20} color="#2563eb" />
-          )}
-        </Pressable>
-      </View>
-
-      {/* Bottom actions */}
       <View
         pointerEvents="box-none"
         style={{

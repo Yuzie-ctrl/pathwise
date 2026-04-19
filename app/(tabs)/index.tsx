@@ -61,6 +61,8 @@ export default function Home() {
   const clearStops = useTripStore((s) => s.clearStops);
   const navigating = useTripStore((s) => s.navigating);
   const setNavigating = useTripStore((s) => s.setNavigating);
+  const drawnRoute = useTripStore((s) => s.drawnRoute);
+  const setDrawnRoute = useTripStore((s) => s.setDrawnRoute);
 
   const [region, setRegion] = useState<MapRegion>(DEFAULT_REGION);
   const [userLocation, setUserLocation] = useState<{
@@ -155,7 +157,7 @@ export default function Home() {
     const reqId = ++routeReqRef.current;
     const controller = new AbortController();
     setLoadingRoute(true);
-    fetchRoute(stops, mode, controller.signal)
+    fetchRoute(stops, mode, controller.signal, drawnRoute)
       .then((newLegs) => {
         if (reqId !== routeReqRef.current) return;
         setLegs(newLegs);
@@ -169,7 +171,7 @@ export default function Home() {
         setLoadingRoute(false);
       });
     return () => controller.abort();
-  }, [stops, mode, setLegs, setLoadingRoute]);
+  }, [stops, mode, setLegs, setLoadingRoute, drawnRoute]);
 
   // ---------------------------------------------------------------------
   // Fit camera to stops when planner is visible
@@ -388,32 +390,40 @@ export default function Home() {
     setDrawProcessing(true);
     try {
       const matched = await matchDrawnRoute(coords, mode);
-      if (matched.length < 2) {
+      if (matched.coordinates.length < 2) {
         Alert.alert('Не удалось', 'Не получилось распознать маршрут');
         return;
       }
-      // If there are already stops, append drawn endpoint as an extra stop;
-      // otherwise create a fresh 2-stop trip.
-      const last = matched[matched.length - 1];
-      if (stops.length === 0) {
-        const first = matched[0];
-        setOriginToPlace({
-          label: 'Начало маршрута',
-          latitude: first.latitude,
-          longitude: first.longitude,
-        });
-        addStop({
-          label: 'Конец маршрута',
-          latitude: last.latitude,
-          longitude: last.longitude,
-        });
-      } else {
-        addStop({
-          label: 'Нарисованная точка',
-          latitude: last.latitude,
-          longitude: last.longitude,
+      const first = matched.coordinates[0];
+      const last = matched.coordinates[matched.coordinates.length - 1];
+
+      // Reset any existing trip and build a fresh 2-stop one whose single leg
+      // is overridden with the drawn (road-matched) polyline, so the router
+      // doesn't "shortcut" the drawing.
+      clearStops();
+      setOriginToPlace({
+        label: 'Начало маршрута',
+        latitude: first.latitude,
+        longitude: first.longitude,
+      });
+      addStop({
+        label: 'Конец маршрута',
+        latitude: last.latitude,
+        longitude: last.longitude,
+      });
+
+      // Grab the new stop IDs to link the override to them.
+      const newStops = useTripStore.getState().stops;
+      if (newStops.length >= 2) {
+        setDrawnRoute({
+          fromStopId: newStops[0].id,
+          toStopId: newStops[1].id,
+          coordinates: matched.coordinates,
+          distanceMeters: matched.distanceMeters,
+          durationSeconds: matched.durationSeconds,
         });
       }
+
       setDrawing(false);
       setPlannerCollapsed(false);
     } catch {
