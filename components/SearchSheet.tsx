@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, TextInput, View } from 'react-native';
-import { Clock, MapPin, Search, X } from 'lucide-react-native';
+import { Brush, Clock, Locate, MapPin, Search, X } from 'lucide-react-native';
 
 import { Text } from '@/components/ui/text';
 import { geocodeSearch, type GeocodeResult } from '@/lib/routing';
@@ -10,9 +10,19 @@ interface SearchSheetProps {
   placeholder?: string;
   onSelect: (result: GeocodeResult) => void;
   onClose: () => void;
+  /** Optional quick action: use the device's current location. */
+  onPickMyLocation?: () => void;
+  /** Optional quick action: enter drawing mode to sketch a route. */
+  onPickDraw?: () => void;
 }
 
-export function SearchSheet({ placeholder = 'Поиск места', onSelect, onClose }: SearchSheetProps) {
+export function SearchSheet({
+  placeholder = 'Поиск места',
+  onSelect,
+  onClose,
+  onPickMyLocation,
+  onPickDraw,
+}: SearchSheetProps) {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<GeocodeResult[]>([]);
   const [loading, setLoading] = useState(false);
@@ -124,6 +134,54 @@ export function SearchSheet({ placeholder = 'Поиск места', onSelect, o
       ) : null}
 
       <ScrollView keyboardShouldPersistTaps="handled" className="flex-1">
+        {/* Quick actions — always visible */}
+        {onPickMyLocation || onPickDraw ? (
+          <View>
+            {onPickMyLocation ? (
+              <Pressable
+                onPress={onPickMyLocation}
+                className="flex-row items-center gap-3 border-b border-border px-4 py-3 active:bg-muted"
+              >
+                <View className="h-9 w-9 items-center justify-center rounded-full bg-primary/10">
+                  <Locate size={18} color="#2563eb" />
+                </View>
+                <View className="flex-1">
+                  <Text className="text-base font-medium text-foreground">
+                    Моё местоположение
+                  </Text>
+                  <Text
+                    className="text-xs text-muted-foreground"
+                    numberOfLines={1}
+                  >
+                    Использовать текущие координаты
+                  </Text>
+                </View>
+              </Pressable>
+            ) : null}
+            {onPickDraw ? (
+              <Pressable
+                onPress={onPickDraw}
+                className="flex-row items-center gap-3 border-b border-border px-4 py-3 active:bg-muted"
+              >
+                <View className="h-9 w-9 items-center justify-center rounded-full bg-primary/10">
+                  <Brush size={18} color="#2563eb" />
+                </View>
+                <View className="flex-1">
+                  <Text className="text-base font-medium text-foreground">
+                    Нарисовать маршрут
+                  </Text>
+                  <Text
+                    className="text-xs text-muted-foreground"
+                    numberOfLines={1}
+                  >
+                    Рисуйте путь пальцем, ИИ подстроит под дороги
+                  </Text>
+                </View>
+              </Pressable>
+            ) : null}
+          </View>
+        ) : null}
+
         {showingHistory ? (
           <View>
             <View className="flex-row items-center justify-between px-4 pb-1 pt-4">

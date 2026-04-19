@@ -9,6 +9,8 @@ export type OriginKind = 'myLocation' | 'place';
 export interface TripStop {
   id: string;
   label: string;
+  /** Full human-readable address (e.g. Nominatim display_name). Optional. */
+  displayName?: string;
   latitude: number;
   longitude: number;
   /** Dwell time at this stop in minutes */
@@ -40,7 +42,12 @@ interface TripState {
   searchHistory: SearchHistoryItem[];
   ensureOrigin: (coords?: { latitude: number; longitude: number }) => void;
   setOriginToMyLocation: (coords: { latitude: number; longitude: number }) => void;
-  setOriginToPlace: (place: { label: string; latitude: number; longitude: number }) => void;
+  setOriginToPlace: (place: {
+    label: string;
+    displayName?: string;
+    latitude: number;
+    longitude: number;
+  }) => void;
   addStop: (
     stop: Omit<TripStop, 'id' | 'dwellMinutes'> & { dwellMinutes?: number },
   ) => void;
@@ -119,6 +126,7 @@ export const useTripStore = create<TripState>()(
           const newOrigin: TripStop = {
             id: next[0]?.id ?? uid(),
             label: place.label,
+            displayName: place.displayName,
             latitude: place.latitude,
             longitude: place.longitude,
             dwellMinutes: 0,
@@ -136,6 +144,7 @@ export const useTripStore = create<TripState>()(
             {
               id: uid(),
               label: stop.label,
+              displayName: stop.displayName,
               latitude: stop.latitude,
               longitude: stop.longitude,
               dwellMinutes: stop.dwellMinutes ?? 0,

@@ -6,7 +6,7 @@ import {
   type LayoutChangeEvent,
 } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
-import { Check, Sparkles, X } from 'lucide-react-native';
+import { Check, Minus, Plus as PlusIcon, Sparkles, X } from 'lucide-react-native';
 
 import { Text } from '@/components/ui/text';
 import type { MapRegion } from '@/components/MapView.types';
@@ -15,6 +15,7 @@ interface DrawCanvasProps {
   region: MapRegion;
   onCancel: () => void;
   onConfirm: (coords: { latitude: number; longitude: number }[]) => void;
+  onRegionChange?: (region: MapRegion) => void;
   processing?: boolean;
 }
 
@@ -28,6 +29,7 @@ export function DrawCanvas({
   region,
   onCancel,
   onConfirm,
+  onRegionChange,
   processing,
 }: DrawCanvasProps) {
   const [size, setSize] = useState<{ width: number; height: number }>({
@@ -162,6 +164,61 @@ export function DrawCanvas({
           </Text>
         </View>
       </View>
+
+      {/* Zoom controls (tap +/- to zoom while in draw mode) */}
+      {onRegionChange ? (
+        <View
+          pointerEvents="box-none"
+          style={{
+            position: 'absolute',
+            right: 16,
+            top: 80,
+            gap: 8,
+          }}
+        >
+          <Pressable
+            onPress={() => {
+              // Zooming invalidates the existing pixel path — clear it.
+              handleClear();
+              onRegionChange({
+                ...region,
+                latitudeDelta: Math.max(0.001, region.latitudeDelta / 1.8),
+                longitudeDelta: Math.max(0.001, region.longitudeDelta / 1.8),
+              });
+            }}
+            className="h-11 w-11 items-center justify-center rounded-full bg-card active:bg-muted"
+            style={{
+              shadowColor: '#000',
+              shadowOffset: { width: 0, height: 2 },
+              shadowOpacity: 0.18,
+              shadowRadius: 6,
+              elevation: 6,
+            }}
+          >
+            <PlusIcon size={20} color="#2563eb" />
+          </Pressable>
+          <Pressable
+            onPress={() => {
+              handleClear();
+              onRegionChange({
+                ...region,
+                latitudeDelta: Math.min(180, region.latitudeDelta * 1.8),
+                longitudeDelta: Math.min(360, region.longitudeDelta * 1.8),
+              });
+            }}
+            className="h-11 w-11 items-center justify-center rounded-full bg-card active:bg-muted"
+            style={{
+              shadowColor: '#000',
+              shadowOffset: { width: 0, height: 2 },
+              shadowOpacity: 0.18,
+              shadowRadius: 6,
+              elevation: 6,
+            }}
+          >
+            <Minus size={20} color="#2563eb" />
+          </Pressable>
+        </View>
+      ) : null}
 
       {/* Bottom actions */}
       <View

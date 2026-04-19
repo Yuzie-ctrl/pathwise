@@ -68,7 +68,7 @@ export default function Home() {
     longitude: number;
   } | null>(null);
   const [plannerCollapsed, setPlannerCollapsed] = useState(false);
-  const [searchMode, setSearchMode] = useState<null | 'destination' | 'origin'>(
+  const [searchMode, setSearchMode] = useState<null | 'destination' | 'origin' | 'stop'>(
     null,
   );
   const [locating, setLocating] = useState(false);
@@ -148,7 +148,6 @@ export default function Home() {
       setLegs([]);
       return;
     }
-    // Origin with no coords yet? skip
     if (stops[0].latitude === 0 && stops[0].longitude === 0) {
       setLegs([]);
       return;
@@ -237,11 +236,7 @@ export default function Home() {
       out.push({
         id: s.id,
         coordinate: { latitude: s.latitude, longitude: s.longitude },
-        title: `${idx + 1}. ${s.label}`,
-        description:
-          !s.dwellMinutes || idx === stops.length - 1
-            ? undefined
-            : `Остановка ${s.dwellMinutes} мин`,
+        // No title/description — we don't want white label pills on the map.
         color: STOP_COLORS[idx % STOP_COLORS.length],
       });
     });
@@ -258,11 +253,24 @@ export default function Home() {
       });
     });
 
+    // Dwell badges next to each stop that has a non-zero dwell (skip last)
+    stops.forEach((s, idx) => {
+      if (idx === 0) return;
+      if (idx === stops.length - 1) return;
+      if (s.dwellMinutes <= 0) return;
+      if (s.latitude === 0 && s.longitude === 0) return;
+      out.push({
+        id: `dwell-${s.id}`,
+        coordinate: { latitude: s.latitude, longitude: s.longitude },
+        badgeText: `⏸ ${s.dwellMinutes}м`,
+        badgeColor: '#f59e0b',
+      });
+    });
+
     if (userLocation) {
       out.push({
         id: 'user',
         coordinate: userLocation,
-        title: 'Вы здесь',
         color: 'blue',
       });
     }
@@ -274,12 +282,33 @@ export default function Home() {
   // ---------------------------------------------------------------------
   const openDestinationSearch = () => setSearchMode('destination');
   const openOriginSearch = () => setSearchMode('origin');
+  const openStopSearch = () => setSearchMode('stop');
   const closeSearch = () => setSearchMode(null);
+
+  const ensureOriginFromUser = useCallback(() => {
+    if (stops.length > 0) return;
+    if (userLocation) {
+      setOriginToMyLocation(userLocation);
+    } else {
+      setOriginToMyLocation({ latitude: 0, longitude: 0 });
+    }
+  }, [stops.length, userLocation, setOriginToMyLocation]);
 
   const handleSearchSelect = (r: GeocodeResult) => {
     if (searchMode === 'origin') {
       setOriginToPlace({
         label: r.shortName,
+        displayName: r.displayName,
+        latitude: r.latitude,
+        longitude: r.longitude,
+      });
+      setSearchMode(null);
+      return;
+    }
+    if (searchMode === 'stop') {
+      addStop({
+        label: r.shortName,
+        displayName: r.displayName,
         latitude: r.latitude,
         longitude: r.longitude,
       });
@@ -287,16 +316,10 @@ export default function Home() {
       return;
     }
     // Destination flow: ensure origin exists (as myLocation) first
-    if (stops.length === 0) {
-      if (userLocation) {
-        setOriginToMyLocation(userLocation);
-      } else {
-        // Origin placeholder — user can tap "Моё местоположение" later to refresh
-        setOriginToMyLocation({ latitude: 0, longitude: 0 });
-      }
-    }
+    ensureOriginFromUser();
     addStop({
       label: r.shortName,
+      displayName: r.displayName,
       latitude: r.latitude,
       longitude: r.longitude,
     });
@@ -304,13 +327,37 @@ export default function Home() {
     setPlannerCollapsed(false);
   };
 
+  const handlePickMyLocation = () => {
+    // Available in origin/destination contexts as a quick action.
+    if (searchMode === 'origin') {
+      if (userLocation) setOriginToMyLocation(userLocation);
+      else setOriginToMyLocation({ latitude: 0, longitude: 0 });
+      setSearchMode(null);
+      return;
+    }
+    // Destination or stop: treat it as the current point — only useful as origin,
+    // but if user chose it, make sure origin is current-location and don't add
+    // a duplicate stop.
+    if (searchMode === 'destination' || searchMode === 'stop') {
+      if (userLocation) setOriginToMyLocation(userLocation);
+      setSearchMode(null);
+    }
+  };
+
+  const handlePickDraw = () => {
+    setSearchMode(null);
+    setDrawing(true);
+  };
+
   const handleClosePlanner = () => {
+    // Full reset: remove all stops, legs, and navigation state.
     clearStops();
+    setNavigating(false);
+    setPlannerCollapsed(false);
   };
 
   const handleStartTrip = () => {
     if (stops.length < 2) return;
-    // Require a real origin
     if (stops[0].latitude === 0 && stops[0].longitude === 0) {
       if (userLocation) {
         setOriginToMyLocation(userLocation);
@@ -324,7 +371,15 @@ export default function Home() {
   };
 
   const handleStopTrip = () => {
+    // Stop trip only — keep stops so user can resume from planner.
     setNavigating(false);
+    setPlannerCollapsed(false);
+  };
+
+  const handleExitTripAndReset = () => {
+    setNavigating(false);
+    clearStops();
+    setPlannerCollapsed(false);
   };
 
   const handleConfirmDrawing = async (
@@ -333,28 +388,32 @@ export default function Home() {
     setDrawProcessing(true);
     try {
       const matched = await matchDrawnRoute(coords, mode);
-      // Turn matched path into 3 stops: start, midpoint, end — so the
-      // planner/UI can treat it as a multi-stop route. We also keep the
-      // polyline itself as a single leg so the rendered line follows
-      // exactly what was matched.
       if (matched.length < 2) {
         Alert.alert('Не удалось', 'Не получилось распознать маршрут');
         return;
       }
-      clearStops();
-      const first = matched[0];
+      // If there are already stops, append drawn endpoint as an extra stop;
+      // otherwise create a fresh 2-stop trip.
       const last = matched[matched.length - 1];
-      // Origin = first point (as "place", since user drew from scratch)
-      setOriginToPlace({
-        label: 'Начало маршрута',
-        latitude: first.latitude,
-        longitude: first.longitude,
-      });
-      addStop({
-        label: 'Конец маршрута',
-        latitude: last.latitude,
-        longitude: last.longitude,
-      });
+      if (stops.length === 0) {
+        const first = matched[0];
+        setOriginToPlace({
+          label: 'Начало маршрута',
+          latitude: first.latitude,
+          longitude: first.longitude,
+        });
+        addStop({
+          label: 'Конец маршрута',
+          latitude: last.latitude,
+          longitude: last.longitude,
+        });
+      } else {
+        addStop({
+          label: 'Нарисованная точка',
+          latitude: last.latitude,
+          longitude: last.longitude,
+        });
+      }
       setDrawing(false);
       setPlannerCollapsed(false);
     } catch {
@@ -382,6 +441,13 @@ export default function Home() {
   // ---------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------
+  // Hide top "Куда едем?" bar once user has picked at least one destination
+  // (i.e. a trip is being planned).
+  const showTopSearchBar = !drawing && !navigating && stops.length === 0;
+  // Brush is only available when no trip is being planned yet OR planner is expanded.
+  const showBrush =
+    !drawing && !navigating && (stops.length === 0 || !plannerCollapsed);
+
   return (
     <View style={{ flex: 1 }} className="bg-background">
       <MapView
@@ -394,8 +460,8 @@ export default function Home() {
         mapType="standard"
       />
 
-      {/* Top search bar — hidden while drawing/navigating */}
-      {!drawing && !navigating ? (
+      {/* Top search bar — only when no trip is being planned */}
+      {showTopSearchBar ? (
         <SafeAreaView edges={['top']} style={{ position: 'absolute', left: 0, right: 0, top: 0 }}>
           <View className="px-4 pt-2">
             <Pressable
@@ -424,21 +490,27 @@ export default function Home() {
       {/* Navigation bar (while in trip mode) */}
       {navigating ? (
         <NavigationBar
-          onExit={handleStopTrip}
+          onBack={handleStopTrip}
+          onExit={handleExitTripAndReset}
           onUserLocation={handleUserLocationUpdate}
         />
       ) : null}
 
-      {/* Floating controls (right side) — always visible when not drawing */}
+      {/* Floating controls (right side) */}
       {!drawing ? (
         <View
           className="absolute right-4"
           style={{
-            bottom: plannerVisible && !plannerCollapsed ? 360 : 40,
+            bottom:
+              plannerVisible && !plannerCollapsed
+                ? 360
+                : plannerVisible && plannerCollapsed
+                  ? 120
+                  : 40,
           }}
           pointerEvents="box-none"
         >
-          {!navigating ? (
+          {showBrush ? (
             <Pressable
               onPress={() => setDrawing(true)}
               className="mb-3 h-12 w-12 items-center justify-center rounded-full bg-card"
@@ -453,27 +525,29 @@ export default function Home() {
               <Brush size={20} color="#2563eb" />
             </Pressable>
           ) : null}
-          <Pressable
-            onPress={locate}
-            className="h-12 w-12 items-center justify-center rounded-full bg-card"
-            style={{
-              shadowColor: '#000',
-              shadowOffset: { width: 0, height: 2 },
-              shadowOpacity: 0.18,
-              shadowRadius: 6,
-              elevation: 6,
-            }}
-          >
-            {locating ? (
-              <ActivityIndicator size="small" />
-            ) : (
-              <Locate size={22} color="#2563eb" />
-            )}
-          </Pressable>
+          {!navigating ? (
+            <Pressable
+              onPress={locate}
+              className="h-12 w-12 items-center justify-center rounded-full bg-card"
+              style={{
+                shadowColor: '#000',
+                shadowOffset: { width: 0, height: 2 },
+                shadowOpacity: 0.18,
+                shadowRadius: 6,
+                elevation: 6,
+              }}
+            >
+              {locating ? (
+                <ActivityIndicator size="small" />
+              ) : (
+                <Locate size={22} color="#2563eb" />
+              )}
+            </Pressable>
+          ) : null}
         </View>
       ) : null}
 
-      {/* Planner bottom sheet (only when there's a destination and not navigating) */}
+      {/* Planner bottom sheet */}
       {plannerVisible && !navigating ? (
         <RoutePlanner
           collapsed={plannerCollapsed}
@@ -481,6 +555,7 @@ export default function Home() {
           onClose={handleClosePlanner}
           onStartTrip={handleStartTrip}
           onChangeOrigin={openOriginSearch}
+          onAddStop={openStopSearch}
         />
       ) : null}
 
@@ -488,6 +563,7 @@ export default function Home() {
       {drawing ? (
         <DrawCanvas
           region={region}
+          onRegionChange={setRegion}
           onCancel={() => setDrawing(false)}
           onConfirm={handleConfirmDrawing}
           processing={drawProcessing}
@@ -500,10 +576,18 @@ export default function Home() {
           <SafeAreaView style={{ flex: 1 }} edges={['top']}>
             <SearchSheet
               placeholder={
-                searchMode === 'origin' ? 'Откуда' : 'Куда едем?'
+                searchMode === 'origin'
+                  ? 'Откуда'
+                  : searchMode === 'stop'
+                    ? 'Добавить остановку'
+                    : 'Куда едем?'
               }
               onSelect={handleSearchSelect}
               onClose={closeSearch}
+              onPickMyLocation={
+                userLocation || searchMode !== 'origin' ? handlePickMyLocation : undefined
+              }
+              onPickDraw={handlePickDraw}
             />
           </SafeAreaView>
         </View>

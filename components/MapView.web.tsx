@@ -1,6 +1,6 @@
-import { Map, Marker, Overlay } from 'pigeon-maps';
+import { Map, Marker } from 'pigeon-maps';
 import { useCallback, useMemo, useRef, useState } from 'react';
-import { View, Text } from 'react-native';
+import { View } from 'react-native';
 
 import { DEFAULT_REGION } from './MapView.types';
 import type { MapViewProps, MapRegion, MapType } from './MapView.types';
@@ -235,67 +235,9 @@ export default function MapView({
               }
             />
           ))}
-        {markers
-          .filter((m) => m.badgeText)
-          .map((marker, index) => (
-            <Overlay
-              key={`badge-${marker.id ?? index}`}
-              anchor={[
-                marker.coordinate.latitude,
-                marker.coordinate.longitude,
-              ]}
-              offset={[14, 14]}
-            >
-              <div
-                onClick={() => onMarkerPress?.(marker)}
-                style={{
-                  background: marker.badgeColor ?? '#2563eb',
-                  color: '#fff',
-                  border: '2px solid #fff',
-                  borderRadius: 9999,
-                  width: 28,
-                  height: 28,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontWeight: 700,
-                  fontSize: 13,
-                  boxShadow: '0 1px 4px rgba(0,0,0,0.35)',
-                  fontFamily: 'sans-serif',
-                  cursor: onMarkerPress ? 'pointer' : 'default',
-                  userSelect: 'none',
-                }}
-              >
-                {marker.badgeText}
-              </div>
-            </Overlay>
-          ))}
-        {markers
-          .filter((m) => m.title && !m.badgeText)
-          .map((marker, index) => (
-            <Overlay
-              key={`overlay-${marker.id ?? index}`}
-              anchor={[
-                marker.coordinate.latitude,
-                marker.coordinate.longitude,
-              ]}
-              offset={[0, -40]}
-            >
-              <Text
-                style={{
-                  backgroundColor: 'white',
-                  padding: 4,
-                  borderRadius: 4,
-                  fontSize: 12,
-                }}
-              >
-                {marker.title}
-              </Text>
-            </Overlay>
-          ))}
       </Map>
 
-      {/* SVG overlay for polylines — must sit above the map visually */}
+      {/* SVG overlay for polylines — sits above tiles & pins, below badges */}
       {svgPaths && svgPaths.length > 0 ? (
         <View
           pointerEvents="none"
@@ -316,6 +258,60 @@ export default function MapView({
           </svg>
         </View>
       ) : null}
+
+      {/* Numbered / dwell badge overlays — positioned manually on top of the SVG */}
+      {viewport.width > 0
+        ? markers
+            .filter((m) => m.badgeText)
+            .map((marker, index) => {
+              const [x, y] = latLngToPixel(
+                marker.coordinate.latitude,
+                marker.coordinate.longitude,
+                currentCenter,
+                currentZoom,
+                viewport.width,
+                viewport.height,
+              );
+              return (
+                <View
+                  key={`badge-${marker.id ?? index}`}
+                  pointerEvents="box-none"
+                  style={{
+                    position: 'absolute',
+                    left: x,
+                    top: y,
+                    transform: [{ translateX: -14 }, { translateY: -14 }],
+                  }}
+                >
+                  {/* eslint-disable-next-line react/forbid-dom-props */}
+                  <div
+                    onClick={() => onMarkerPress?.(marker)}
+                    style={{
+                      background: marker.badgeColor ?? '#2563eb',
+                      color: '#fff',
+                      border: '2px solid #fff',
+                      borderRadius: 9999,
+                      padding: '2px 8px',
+                      minWidth: 28,
+                      height: 28,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontWeight: 700,
+                      fontSize: 12,
+                      boxShadow: '0 1px 4px rgba(0,0,0,0.35)',
+                      fontFamily: 'sans-serif',
+                      cursor: onMarkerPress ? 'pointer' : 'default',
+                      userSelect: 'none',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {marker.badgeText}
+                  </div>
+                </View>
+              );
+            })
+        : null}
     </View>
   );
 }

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Alert, Pressable, View } from 'react-native';
 import * as Location from 'expo-location';
-import { MapPin, Navigation2, X } from 'lucide-react-native';
+import { ArrowLeft, MapPin, Navigation2, X } from 'lucide-react-native';
 
 import { Text } from '@/components/ui/text';
 import {
@@ -17,6 +17,9 @@ import {
 } from '@/lib/stores/tripStore';
 
 interface NavigationBarProps {
+  /** Go back to the planner (keeps stops/legs). */
+  onBack: () => void;
+  /** Fully exit and reset the trip. */
   onExit: () => void;
   onUserLocation: (coord: { latitude: number; longitude: number }) => void;
 }
@@ -27,7 +30,7 @@ interface NavigationBarProps {
  * show next-stop distance, elapsed progress along the current leg, and
  * overall ETA — enough to feel like Google Maps during navigation.
  */
-export function NavigationBar({ onExit, onUserLocation }: NavigationBarProps) {
+export function NavigationBar({ onBack, onExit, onUserLocation }: NavigationBarProps) {
   const stops = useTripStore((s) => s.stops);
   const legs = useTripStore((s) => s.legs);
 
@@ -112,6 +115,13 @@ export function NavigationBar({ onExit, onUserLocation }: NavigationBarProps) {
       }}
     >
       <View className="flex-row items-center gap-3 px-4">
+        <Pressable
+          onPress={onBack}
+          hitSlop={10}
+          className="h-10 w-10 items-center justify-center rounded-full bg-primary-foreground/20 active:bg-primary-foreground/30"
+        >
+          <ArrowLeft size={20} color="#fff" />
+        </Pressable>
         <View className="h-10 w-10 items-center justify-center rounded-full bg-primary-foreground/20">
           <Navigation2 size={20} color="#fff" />
         </View>

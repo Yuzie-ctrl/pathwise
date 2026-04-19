@@ -103,20 +103,28 @@ function buildLeafletHtml(
 ) {
   const zoom = Math.round(Math.log2(360 / region.latitudeDelta));
 
-  const markersJs = markers
+  const pinMarkersJs = markers
+    .filter((m) => !m.badgeText)
     .map((m, i) => {
-      const isBadge = !!m.badgeText;
-      const icon = isBadge
-        ? `L.divIcon({className:'rido-badge',html:'<div style="background:${m.badgeColor ?? '#2563eb'};color:#fff;border:2px solid #fff;border-radius:9999px;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;box-shadow:0 1px 4px rgba(0,0,0,0.35);font-family:sans-serif">${String(m.badgeText).replace(/[<>&]/g, '')}</div>',iconSize:[28,28],iconAnchor:[14,14]})`
-        : `L.icon({iconUrl:'${markerIconUrl(m.color)}',iconSize:[25,41],iconAnchor:[12,41],popupAnchor:[1,-34],shadowUrl:'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',shadowSize:[41,41]})`;
-      const popup = m.title
-        ? `.bindPopup(${JSON.stringify(m.title + (m.description ? '<br/>' + m.description : ''))})`
-        : '';
+      const icon = `L.icon({iconUrl:'${markerIconUrl(m.color)}',iconSize:[25,41],iconAnchor:[12,41],popupAnchor:[1,-34],shadowUrl:'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',shadowSize:[41,41]})`;
       const drag = m.draggable ? ',draggable:true' : '';
       const opacity = m.opacity != null ? `,opacity:${m.opacity}` : '';
-      return `var mk${i}=L.marker([${m.coordinate.latitude},${m.coordinate.longitude}],{icon:${icon}${drag}${opacity}})${popup}.addTo(map);
-mk${i}.on('click',function(){window.ReactNativeWebView.postMessage(JSON.stringify({type:'markerPress',index:${i}}))});
-${m.draggable ? `mk${i}.on('dragend',function(e){var ll=e.target.getLatLng();window.ReactNativeWebView.postMessage(JSON.stringify({type:'dragEnd',index:${i},lat:ll.lat,lng:ll.lng}))});` : ''}`;
+      const mi = markers.indexOf(m);
+      return `var mk${i}=L.marker([${m.coordinate.latitude},${m.coordinate.longitude}],{icon:${icon}${drag}${opacity}}).addTo(map);
+mk${i}.on('click',function(){window.ReactNativeWebView.postMessage(JSON.stringify({type:'markerPress',index:${mi}}))});
+${m.draggable ? `mk${i}.on('dragend',function(e){var ll=e.target.getLatLng();window.ReactNativeWebView.postMessage(JSON.stringify({type:'dragEnd',index:${mi},lat:ll.lat,lng:ll.lng}))});` : ''}`;
+    })
+    .join('\n');
+
+  const badgeMarkersJs = markers
+    .filter((m) => !!m.badgeText)
+    .map((m, i) => {
+      const text = String(m.badgeText).replace(/[<>&]/g, '');
+      const html = `<div style="background:${m.badgeColor ?? '#2563eb'};color:#fff;border:2px solid #fff;border-radius:9999px;min-width:28px;height:28px;padding:0 8px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;box-shadow:0 1px 4px rgba(0,0,0,0.35);font-family:sans-serif;white-space:nowrap">${text}</div>`;
+      const icon = `L.divIcon({className:'rido-badge',html:'${html}',iconSize:null,iconAnchor:[14,14]})`;
+      const mi = markers.indexOf(m);
+      return `var bg${i}=L.marker([${m.coordinate.latitude},${m.coordinate.longitude}],{icon:${icon}}).addTo(map);
+bg${i}.on('click',function(){window.ReactNativeWebView.postMessage(JSON.stringify({type:'markerPress',index:${mi}}))});`;
     })
     .join('\n');
 
@@ -165,10 +173,11 @@ var map = L.map('map',{${mapOptions}}).setView([${region.latitude},${region.long
 L.tileLayer('${tileUrl(options.mapType)}',{attribution:'© OpenStreetMap'}).addTo(map);
 map.on('click',function(e){window.ReactNativeWebView.postMessage(JSON.stringify({type:'press',lat:e.latlng.lat,lng:e.latlng.lng}))});
 map.on('contextmenu',function(e){window.ReactNativeWebView.postMessage(JSON.stringify({type:'longPress',lat:e.latlng.lat,lng:e.latlng.lng}))});
-${markersJs}
+${pinMarkersJs}
 ${polylinesJs}
 ${polygonsJs}
 ${circlesJs}
+${badgeMarkersJs}
 </script>
 </body></html>`;
 }
