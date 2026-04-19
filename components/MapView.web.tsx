@@ -1,5 +1,5 @@
 import { Map, Marker, Overlay } from 'pigeon-maps';
-import { useCallback } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { View, Text } from 'react-native';
 
 import { DEFAULT_REGION } from './MapView.types';
@@ -56,6 +56,32 @@ const COLOR_HUE: Record<string, number> = {
   purple: 280,
 };
 
+// ---------------------------------------------------------------------------
+// Lat/Lng -> pixel conversion (Web Mercator), relative to a center/zoom pair.
+// Matches pigeon-maps default 256px tile size.
+// ---------------------------------------------------------------------------
+function latLngToPixel(
+  lat: number,
+  lng: number,
+  center: [number, number],
+  zoom: number,
+  width: number,
+  height: number,
+): [number, number] {
+  const tileSize = 256;
+  const scale = Math.pow(2, zoom);
+  const project = (la: number, ln: number) => {
+    const x = ((ln + 180) / 360) * tileSize * scale;
+    const sin = Math.sin((la * Math.PI) / 180);
+    const y =
+      (0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI)) * tileSize * scale;
+    return [x, y];
+  };
+  const [cx, cy] = project(center[0], center[1]);
+  const [px, py] = project(lat, lng);
+  return [px - cx + width / 2, py - cy + height / 2];
+}
+
 export default function MapView({
   initialRegion = DEFAULT_REGION,
   region,
@@ -63,7 +89,7 @@ export default function MapView({
   onRegionChangeComplete,
   mapType = 'standard',
   markers = [],
-  polylines: _polylines = [],
+  polylines = [],
   polygons: _polygons = [],
   circles: _circles = [],
   onPress,
@@ -80,8 +106,34 @@ export default function MapView({
   const center = regionToCenter(activeRegion);
   const zoom = zoomLevel ?? deltaToZoom(activeRegion.latitudeDelta);
 
+  const [viewport, setViewport] = useState<{ width: number; height: number }>({
+    width: 0,
+    height: 0,
+  });
+  const [currentZoom, setCurrentZoom] = useState(zoom);
+  const [currentCenter, setCurrentCenter] =
+    useState<[number, number]>(center);
+  const lastExternalRegion = useRef<MapRegion>(activeRegion);
+
+  // Sync controlled region → internal state
+  if (
+    region &&
+    (region.latitude !== lastExternalRegion.current.latitude ||
+      region.longitude !== lastExternalRegion.current.longitude ||
+      region.latitudeDelta !== lastExternalRegion.current.latitudeDelta)
+  ) {
+    lastExternalRegion.current = region;
+    // Defer to avoid setState-in-render warning
+    queueMicrotask(() => {
+      setCurrentCenter([region.latitude, region.longitude]);
+      setCurrentZoom(deltaToZoom(region.latitudeDelta));
+    });
+  }
+
   const handleBoundsChange = useCallback(
     ({ center: c, zoom: z }: { center: [number, number]; zoom: number }) => {
+      setCurrentCenter(c);
+      setCurrentZoom(z);
       const latDelta = 360 / Math.pow(2, z);
       const newRegion: MapRegion = {
         latitude: c[0],
@@ -104,15 +156,58 @@ export default function MapView({
 
   const provider = tileProvider(mapType);
 
-  // Note: pigeon-maps doesn't natively support polylines/polygons/circles.
-  // These overlays render on native and Expo Go (Leaflet). For full web
-  // overlay support, consider switching to react-leaflet.
+  const height =
+    typeof style === 'object' && style !== null && 'height' in style
+      ? (style.height as number)
+      : undefined;
+
+  // Build SVG polylines
+  const svgPaths = useMemo(() => {
+    if (!viewport.width || !viewport.height) return null;
+    return polylines.map((p, i) => {
+      const d = p.coordinates
+        .map((c, idx) => {
+          const [x, y] = latLngToPixel(
+            c.latitude,
+            c.longitude,
+            currentCenter,
+            currentZoom,
+            viewport.width,
+            viewport.height,
+          );
+          return `${idx === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
+        })
+        .join(' ');
+      const dash = p.lineDashPattern ? p.lineDashPattern.join(',') : undefined;
+      return (
+        <path
+          key={p.id ?? `pl-${i}`}
+          d={d}
+          stroke={p.strokeColor ?? '#2563eb'}
+          strokeWidth={p.strokeWidth ?? 4}
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeDasharray={dash}
+          fill="none"
+        />
+      );
+    });
+  }, [polylines, viewport, currentCenter, currentZoom]);
 
   return (
-    <View style={style} className={className}>
+    <View
+      style={style}
+      className={className}
+      onLayout={(e) =>
+        setViewport({
+          width: e.nativeEvent.layout.width,
+          height: e.nativeEvent.layout.height,
+        })
+      }
+    >
       <Map
-        center={center}
-        zoom={zoom}
+        center={currentCenter}
+        zoom={currentZoom}
         onBoundsChanged={handleBoundsChange}
         onClick={onPress ? handleClick : undefined}
         provider={provider}
@@ -122,24 +217,57 @@ export default function MapView({
         minZoom={minZoomLevel}
         maxZoom={maxZoomLevel}
         zoomSnap={zoomEnabled}
-        height={
-          typeof style === 'object' && style !== null && 'height' in style
-            ? (style.height as number)
-            : 400
-        }
+        height={height ?? 400}
       >
-        {markers.map((marker, index) => (
-          <Marker
-            key={marker.id ?? index}
-            anchor={[marker.coordinate.latitude, marker.coordinate.longitude]}
-            color={`hsl(${COLOR_HUE[marker.color ?? 'red'] ?? 0}, 80%, 50%)`}
-            onClick={
-              onMarkerPress ? () => onMarkerPress(marker) : undefined
-            }
-          />
-        ))}
         {markers
-          .filter((m) => m.title)
+          .filter((m) => !m.badgeText)
+          .map((marker, index) => (
+            <Marker
+              key={marker.id ?? index}
+              anchor={[marker.coordinate.latitude, marker.coordinate.longitude]}
+              color={`hsl(${COLOR_HUE[marker.color ?? 'red'] ?? 0}, 80%, 50%)`}
+              onClick={
+                onMarkerPress ? () => onMarkerPress(marker) : undefined
+              }
+            />
+          ))}
+        {markers
+          .filter((m) => m.badgeText)
+          .map((marker, index) => (
+            <Overlay
+              key={`badge-${marker.id ?? index}`}
+              anchor={[
+                marker.coordinate.latitude,
+                marker.coordinate.longitude,
+              ]}
+              offset={[14, 14]}
+            >
+              <div
+                onClick={() => onMarkerPress?.(marker)}
+                style={{
+                  background: marker.badgeColor ?? '#2563eb',
+                  color: '#fff',
+                  border: '2px solid #fff',
+                  borderRadius: 9999,
+                  width: 28,
+                  height: 28,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontWeight: 700,
+                  fontSize: 13,
+                  boxShadow: '0 1px 4px rgba(0,0,0,0.35)',
+                  fontFamily: 'sans-serif',
+                  cursor: onMarkerPress ? 'pointer' : 'default',
+                  userSelect: 'none',
+                }}
+              >
+                {marker.badgeText}
+              </div>
+            </Overlay>
+          ))}
+        {markers
+          .filter((m) => m.title && !m.badgeText)
           .map((marker, index) => (
             <Overlay
               key={`overlay-${marker.id ?? index}`}
@@ -162,6 +290,28 @@ export default function MapView({
             </Overlay>
           ))}
       </Map>
+
+      {/* SVG overlay for polylines — must sit above the map visually */}
+      {svgPaths && svgPaths.length > 0 ? (
+        <View
+          pointerEvents="none"
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+          }}
+        >
+          <svg
+            width={viewport.width}
+            height={viewport.height}
+            style={{ position: 'absolute', top: 0, left: 0 }}
+          >
+            {svgPaths}
+          </svg>
+        </View>
+      ) : null}
     </View>
   );
 }

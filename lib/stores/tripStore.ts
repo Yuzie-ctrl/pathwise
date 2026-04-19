@@ -1,6 +1,10 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { create } from 'zustand';
+import { persist, createJSONStorage } from 'zustand/middleware';
 
-export type TransportMode = 'walking' | 'driving' | 'cycling';
+export type TransportMode = 'walking' | 'driving' | 'cycling' | 'transit';
+
+export type OriginKind = 'myLocation' | 'place';
 
 export interface TripStop {
   id: string;
@@ -9,6 +13,8 @@ export interface TripStop {
   longitude: number;
   /** Dwell time at this stop in minutes */
   dwellMinutes: number;
+  /** First stop may represent "My location" (dynamic) or a custom place */
+  originKind?: OriginKind;
 }
 
 export interface RouteLeg {
@@ -17,12 +23,27 @@ export interface RouteLeg {
   coordinates: { latitude: number; longitude: number }[];
 }
 
+export interface SearchHistoryItem {
+  label: string;
+  displayName: string;
+  latitude: number;
+  longitude: number;
+  ts: number;
+}
+
 interface TripState {
   stops: TripStop[];
   mode: TransportMode;
   legs: RouteLeg[];
   loadingRoute: boolean;
-  addStop: (stop: Omit<TripStop, 'id' | 'dwellMinutes'> & { dwellMinutes?: number }) => void;
+  navigating: boolean;
+  searchHistory: SearchHistoryItem[];
+  ensureOrigin: (coords?: { latitude: number; longitude: number }) => void;
+  setOriginToMyLocation: (coords: { latitude: number; longitude: number }) => void;
+  setOriginToPlace: (place: { label: string; latitude: number; longitude: number }) => void;
+  addStop: (
+    stop: Omit<TripStop, 'id' | 'dwellMinutes'> & { dwellMinutes?: number },
+  ) => void;
   removeStop: (id: string) => void;
   replaceStop: (id: string, next: Partial<TripStop>) => void;
   setDwell: (id: string, minutes: number) => void;
@@ -31,58 +52,161 @@ interface TripState {
   setMode: (mode: TransportMode) => void;
   setLegs: (legs: RouteLeg[]) => void;
   setLoadingRoute: (loading: boolean) => void;
+  setNavigating: (n: boolean) => void;
+  addToHistory: (item: Omit<SearchHistoryItem, 'ts'>) => void;
+  clearHistory: () => void;
 }
 
 function uid() {
   return `stop_${Math.random().toString(36).slice(2, 10)}`;
 }
 
-export const useTripStore = create<TripState>((set) => ({
-  stops: [],
-  mode: 'driving',
-  legs: [],
-  loadingRoute: false,
-  addStop: (stop) =>
-    set((state) => ({
-      stops: [
-        ...state.stops,
-        {
-          id: uid(),
-          label: stop.label,
-          latitude: stop.latitude,
-          longitude: stop.longitude,
-          dwellMinutes: stop.dwellMinutes ?? 0,
-        },
-      ],
-    })),
-  removeStop: (id) =>
-    set((state) => ({ stops: state.stops.filter((s) => s.id !== id) })),
-  replaceStop: (id, next) =>
-    set((state) => ({
-      stops: state.stops.map((s) => (s.id === id ? { ...s, ...next } : s)),
-    })),
-  setDwell: (id, minutes) =>
-    set((state) => ({
-      stops: state.stops.map((s) =>
-        s.id === id ? { ...s, dwellMinutes: Math.max(0, minutes) } : s,
-      ),
-    })),
-  moveStop: (id, direction) =>
-    set((state) => {
-      const idx = state.stops.findIndex((s) => s.id === id);
-      if (idx === -1) return state;
-      const target = idx + direction;
-      if (target < 0 || target >= state.stops.length) return state;
-      const next = state.stops.slice();
-      const [item] = next.splice(idx, 1);
-      next.splice(target, 0, item);
-      return { stops: next };
+export const useTripStore = create<TripState>()(
+  persist(
+    (set, get) => ({
+      stops: [],
+      mode: 'driving',
+      legs: [],
+      loadingRoute: false,
+      navigating: false,
+      searchHistory: [],
+
+      ensureOrigin: (coords) => {
+        const { stops } = get();
+        if (stops.length > 0) return;
+        set({
+          stops: [
+            {
+              id: uid(),
+              label: 'Моё местоположение',
+              latitude: coords?.latitude ?? 0,
+              longitude: coords?.longitude ?? 0,
+              dwellMinutes: 0,
+              originKind: 'myLocation',
+            },
+          ],
+        });
+      },
+
+      setOriginToMyLocation: (coords) =>
+        set((state) => {
+          const next = state.stops.slice();
+          if (next.length === 0) {
+            next.push({
+              id: uid(),
+              label: 'Моё местоположение',
+              latitude: coords.latitude,
+              longitude: coords.longitude,
+              dwellMinutes: 0,
+              originKind: 'myLocation',
+            });
+          } else {
+            next[0] = {
+              ...next[0],
+              label: 'Моё местоположение',
+              latitude: coords.latitude,
+              longitude: coords.longitude,
+              originKind: 'myLocation',
+              dwellMinutes: 0,
+            };
+          }
+          return { stops: next };
+        }),
+
+      setOriginToPlace: (place) =>
+        set((state) => {
+          const next = state.stops.slice();
+          const newOrigin: TripStop = {
+            id: next[0]?.id ?? uid(),
+            label: place.label,
+            latitude: place.latitude,
+            longitude: place.longitude,
+            dwellMinutes: 0,
+            originKind: 'place',
+          };
+          if (next.length === 0) next.push(newOrigin);
+          else next[0] = newOrigin;
+          return { stops: next };
+        }),
+
+      addStop: (stop) =>
+        set((state) => ({
+          stops: [
+            ...state.stops,
+            {
+              id: uid(),
+              label: stop.label,
+              latitude: stop.latitude,
+              longitude: stop.longitude,
+              dwellMinutes: stop.dwellMinutes ?? 0,
+              originKind: stop.originKind,
+            },
+          ],
+        })),
+
+      removeStop: (id) =>
+        set((state) => {
+          // Cannot remove the origin (first stop) directly. Instead, if it's
+          // a "place" origin, reset it to myLocation placeholder (lat/lon 0)
+          // so UI can re-resolve. If it's already myLocation, no-op.
+          const idx = state.stops.findIndex((s) => s.id === id);
+          if (idx === -1) return state;
+          if (idx === 0) return state;
+          return { stops: state.stops.filter((s) => s.id !== id) };
+        }),
+
+      replaceStop: (id, next) =>
+        set((state) => ({
+          stops: state.stops.map((s) => (s.id === id ? { ...s, ...next } : s)),
+        })),
+
+      setDwell: (id, minutes) =>
+        set((state) => ({
+          stops: state.stops.map((s) =>
+            s.id === id ? { ...s, dwellMinutes: Math.max(0, minutes) } : s,
+          ),
+        })),
+
+      moveStop: (id, direction) =>
+        set((state) => {
+          const idx = state.stops.findIndex((s) => s.id === id);
+          if (idx === -1) return state;
+          const target = idx + direction;
+          // Origin (index 0) is locked in place
+          if (idx === 0 || target === 0) return state;
+          if (target < 0 || target >= state.stops.length) return state;
+          const next = state.stops.slice();
+          const [item] = next.splice(idx, 1);
+          next.splice(target, 0, item);
+          return { stops: next };
+        }),
+
+      clearStops: () => set({ stops: [], legs: [], navigating: false }),
+      setMode: (mode) => set({ mode }),
+      setLegs: (legs) => set({ legs }),
+      setLoadingRoute: (loading) => set({ loadingRoute: loading }),
+      setNavigating: (navigating) => set({ navigating }),
+
+      addToHistory: (item) =>
+        set((state) => {
+          const key = `${item.latitude.toFixed(5)}|${item.longitude.toFixed(5)}`;
+          const filtered = state.searchHistory.filter(
+            (h) => `${h.latitude.toFixed(5)}|${h.longitude.toFixed(5)}` !== key,
+          );
+          return {
+            searchHistory: [{ ...item, ts: Date.now() }, ...filtered].slice(0, 12),
+          };
+        }),
+
+      clearHistory: () => set({ searchHistory: [] }),
     }),
-  clearStops: () => set({ stops: [], legs: [] }),
-  setMode: (mode) => set({ mode }),
-  setLegs: (legs) => set({ legs }),
-  setLoadingRoute: (loading) => set({ loadingRoute: loading }),
-}));
+    {
+      name: 'rido-trip-store',
+      storage: createJSONStorage(() => AsyncStorage),
+      partialize: (state) => ({ searchHistory: state.searchHistory, mode: state.mode }),
+    },
+  ),
+);
 
 export function totalDwellMinutes(stops: TripStop[]): number {
   // Dwell at final stop doesn't count toward travel ETA (you're there)

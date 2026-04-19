@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { View } from 'react-native';
+import { Text, View } from 'react-native';
 import { WebView } from 'react-native-webview';
 
 import { DEFAULT_REGION } from './MapView.types';
@@ -105,7 +105,10 @@ function buildLeafletHtml(
 
   const markersJs = markers
     .map((m, i) => {
-      const icon = `L.icon({iconUrl:'${markerIconUrl(m.color)}',iconSize:[25,41],iconAnchor:[12,41],popupAnchor:[1,-34],shadowUrl:'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',shadowSize:[41,41]})`;
+      const isBadge = !!m.badgeText;
+      const icon = isBadge
+        ? `L.divIcon({className:'rido-badge',html:'<div style="background:${m.badgeColor ?? '#2563eb'};color:#fff;border:2px solid #fff;border-radius:9999px;width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;box-shadow:0 1px 4px rgba(0,0,0,0.35);font-family:sans-serif">${String(m.badgeText).replace(/[<>&]/g, '')}</div>',iconSize:[28,28],iconAnchor:[14,14]})`
+        : `L.icon({iconUrl:'${markerIconUrl(m.color)}',iconSize:[25,41],iconAnchor:[12,41],popupAnchor:[1,-34],shadowUrl:'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',shadowSize:[41,41]})`;
       const popup = m.title
         ? `.bindPopup(${JSON.stringify(m.title + (m.description ? '<br/>' + m.description : ''))})`
         : '';
@@ -319,7 +322,7 @@ export default function MapView({
             coordinate={marker.coordinate}
             title={marker.title}
             description={marker.description}
-            pinColor={marker.color}
+            pinColor={marker.badgeText ? undefined : marker.color}
             draggable={marker.draggable}
             opacity={marker.opacity}
             onDragEnd={
@@ -331,7 +334,31 @@ export default function MapView({
             onPress={
               onMarkerPress ? () => onMarkerPress(marker) : undefined
             }
-          />
+          >
+            {marker.badgeText ? (
+              <View
+                style={{
+                  backgroundColor: marker.badgeColor ?? '#2563eb',
+                  borderColor: '#fff',
+                  borderWidth: 2,
+                  borderRadius: 999,
+                  width: 28,
+                  height: 28,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  shadowColor: '#000',
+                  shadowOpacity: 0.3,
+                  shadowRadius: 4,
+                  shadowOffset: { width: 0, height: 1 },
+                  elevation: 3,
+                }}
+              >
+                <Text style={{ color: '#fff', fontWeight: '700', fontSize: 13 }}>
+                  {marker.badgeText}
+                </Text>
+              </View>
+            ) : null}
+          </Marker>
         ))}
         {polylines.map((polyline, index) => (
           <Polyline

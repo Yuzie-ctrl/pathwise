@@ -49,6 +49,10 @@ export interface MapMarker {
   opacity?: number;
   /** Called when a draggable marker is released */
   onDragEnd?: (coordinate: LatLng) => void;
+  /** Render as a text/number badge (circle with text inside) instead of pin */
+  badgeText?: string;
+  /** Background color for a badge marker (CSS color) */
+  badgeColor?: string;
 }
 
 // ---------------------------------------------------------------------------
