@@ -104,7 +104,7 @@ function buildLeafletHtml(
   const zoom = Math.round(Math.log2(360 / region.latitudeDelta));
 
   const pinMarkersJs = markers
-    .filter((m) => !m.badgeText)
+    .filter((m) => !m.badgeText && !m.badgeHtml)
     .map((m, i) => {
       const icon = `L.icon({iconUrl:'${markerIconUrl(m.color)}',iconSize:[25,41],iconAnchor:[12,41],popupAnchor:[1,-34],shadowUrl:'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',shadowSize:[41,41]})`;
       const drag = m.draggable ? ',draggable:true' : '';
@@ -117,13 +117,19 @@ ${m.draggable ? `mk${i}.on('dragend',function(e){var ll=e.target.getLatLng();win
     .join('\n');
 
   const badgeMarkersJs = markers
-    .filter((m) => !!m.badgeText)
+    .filter((m) => !!m.badgeText || !!m.badgeHtml)
     .map((m, i) => {
-      const text = String(m.badgeText).replace(/[<>&]/g, '');
-      const html = `<div style="background:${m.badgeColor ?? '#2563eb'};color:#fff;border:2px solid #fff;border-radius:9999px;min-width:28px;height:28px;padding:0 8px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;box-shadow:0 1px 4px rgba(0,0,0,0.35);font-family:sans-serif;white-space:nowrap">${text}</div>`;
+      const rot = m.rotationDegrees ?? 0;
+      let html: string;
+      if (m.badgeHtml) {
+        html = m.badgeHtml.replace(/'/g, '&apos;');
+      } else {
+        const text = String(m.badgeText).replace(/[<>&]/g, '');
+        html = `<div style="background:${m.badgeColor ?? '#2563eb'};color:#fff;border:2px solid #fff;border-radius:9999px;min-width:28px;height:28px;padding:0 8px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;box-shadow:0 1px 4px rgba(0,0,0,0.35);font-family:sans-serif;white-space:nowrap;transform:rotate(${rot}deg)">${text}</div>`;
+      }
       const icon = `L.divIcon({className:'rido-badge',html:'${html}',iconSize:null,iconAnchor:[14,14]})`;
       const mi = markers.indexOf(m);
-      return `var bg${i}=L.marker([${m.coordinate.latitude},${m.coordinate.longitude}],{icon:${icon}}).addTo(map);
+      return `var bg${i}=L.marker([${m.coordinate.latitude},${m.coordinate.longitude}],{icon:${icon},zIndexOffset:1000}).addTo(map);
 bg${i}.on('click',function(){window.ReactNativeWebView.postMessage(JSON.stringify({type:'markerPress',index:${mi}}))});`;
     })
     .join('\n');
@@ -256,6 +262,17 @@ export default function MapView({
     [polylines],
   );
 
+  const markerSig = useMemo(
+    () =>
+      markers
+        .map(
+          (m) =>
+            `${m.id ?? ''}|${m.coordinate.latitude.toFixed(5)}|${m.coordinate.longitude.toFixed(5)}|${m.badgeText ?? ''}|${m.rotationDegrees ?? ''}|${m.badgeHtml ? m.badgeHtml.length : ''}`,
+        )
+        .join(';'),
+    [markers],
+  );
+
   const leafletHtml = useMemo(
     () =>
       buildLeafletHtml(activeRegion, markers, polylines, polygons, circles, {
@@ -271,6 +288,7 @@ export default function MapView({
       activeRegion.longitude,
       activeRegion.latitudeDelta,
       markers.length,
+      markerSig,
       polylines.length,
       polylineSig,
       polygons.length,

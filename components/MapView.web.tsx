@@ -224,7 +224,7 @@ export default function MapView({
         width={mapWidth}
       >
         {markers
-          .filter((m) => !m.badgeText)
+          .filter((m) => !m.badgeText && !m.badgeHtml)
           .map((marker, index) => (
             <Marker
               key={marker.id ?? index}
@@ -259,10 +259,10 @@ export default function MapView({
         </View>
       ) : null}
 
-      {/* Numbered / dwell badge overlays — positioned manually on top of the SVG */}
+      {/* Numbered / dwell / heading badge overlays — positioned manually on top of the SVG */}
       {viewport.width > 0
         ? markers
-            .filter((m) => m.badgeText)
+            .filter((m) => m.badgeText || m.badgeHtml)
             .map((marker, index) => {
               const [x, y] = latLngToPixel(
                 marker.coordinate.latitude,
@@ -272,6 +272,7 @@ export default function MapView({
                 viewport.width,
                 viewport.height,
               );
+              const rot = marker.rotationDegrees ?? 0;
               return (
                 <View
                   key={`badge-${marker.id ?? index}`}
@@ -281,33 +282,49 @@ export default function MapView({
                     left: x,
                     top: y,
                     transform: [{ translateX: -14 }, { translateY: -14 }],
+                    zIndex: 1000,
                   }}
                 >
-                  {/* eslint-disable-next-line react/forbid-dom-props */}
-                  <div
-                    onClick={() => onMarkerPress?.(marker)}
-                    style={{
-                      background: marker.badgeColor ?? '#2563eb',
-                      color: '#fff',
-                      border: '2px solid #fff',
-                      borderRadius: 9999,
-                      padding: '2px 8px',
-                      minWidth: 28,
-                      height: 28,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      fontWeight: 700,
-                      fontSize: 12,
-                      boxShadow: '0 1px 4px rgba(0,0,0,0.35)',
-                      fontFamily: 'sans-serif',
-                      cursor: onMarkerPress ? 'pointer' : 'default',
-                      userSelect: 'none',
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
-                    {marker.badgeText}
-                  </div>
+                  {marker.badgeHtml ? (
+                    // eslint-disable-next-line react/forbid-dom-props
+                    <div
+                      onClick={() => onMarkerPress?.(marker)}
+                      // eslint-disable-next-line react/no-danger
+                      dangerouslySetInnerHTML={{ __html: marker.badgeHtml }}
+                      style={{
+                        transform: `rotate(${rot}deg)`,
+                        cursor: onMarkerPress ? 'pointer' : 'default',
+                        userSelect: 'none',
+                      }}
+                    />
+                  ) : (
+                    // eslint-disable-next-line react/forbid-dom-props
+                    <div
+                      onClick={() => onMarkerPress?.(marker)}
+                      style={{
+                        background: marker.badgeColor ?? '#2563eb',
+                        color: '#fff',
+                        border: '2px solid #fff',
+                        borderRadius: 9999,
+                        padding: '2px 8px',
+                        minWidth: 28,
+                        height: 28,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontWeight: 700,
+                        fontSize: 12,
+                        boxShadow: '0 1px 4px rgba(0,0,0,0.35)',
+                        fontFamily: 'sans-serif',
+                        cursor: onMarkerPress ? 'pointer' : 'default',
+                        userSelect: 'none',
+                        whiteSpace: 'nowrap',
+                        transform: `rotate(${rot}deg)`,
+                      }}
+                    >
+                      {marker.badgeText}
+                    </div>
+                  )}
                 </View>
               );
             })

@@ -197,7 +197,7 @@ export function SearchSheet({
                 key={`${h.latitude}-${h.longitude}-${i}`}
                 onPress={() =>
                   handleSelect({
-                    displayName: h.displayName,
+                    displayName: h.displayName || h.label,
                     shortName: h.label,
                     latitude: h.latitude,
                     longitude: h.longitude,
@@ -210,16 +210,10 @@ export function SearchSheet({
                 </View>
                 <View className="flex-1">
                   <Text
-                    className="text-base font-medium text-foreground"
+                    className="text-base text-foreground"
                     numberOfLines={1}
                   >
                     {h.label}
-                  </Text>
-                  <Text
-                    className="text-xs text-muted-foreground"
-                    numberOfLines={1}
-                  >
-                    {h.displayName}
                   </Text>
                 </View>
               </Pressable>
@@ -242,11 +236,8 @@ export function SearchSheet({
               <MapPin size={18} color="#2563eb" />
             </View>
             <View className="flex-1">
-              <Text className="text-base font-medium text-foreground" numberOfLines={1}>
+              <Text className="text-base text-foreground" numberOfLines={1}>
                 {r.shortName}
-              </Text>
-              <Text className="text-xs text-muted-foreground" numberOfLines={2}>
-                {r.displayName}
               </Text>
             </View>
           </Pressable>

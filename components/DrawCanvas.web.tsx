@@ -11,6 +11,7 @@ interface DrawCanvasProps {
   onConfirm: (coords: { latitude: number; longitude: number }[]) => void;
   onRegionChange?: (region: MapRegion) => void;
   processing?: boolean;
+  partial?: boolean;
 }
 
 /**
@@ -33,6 +34,7 @@ export function DrawCanvas({
   onCancel,
   onConfirm,
   processing,
+  partial,
 }: DrawCanvasProps) {
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -389,8 +391,12 @@ export function DrawCanvas({
           <Sparkles size={16} color="#2563eb" />
           <Text className="flex-1 text-sm text-foreground">
             {hasDrawn
-              ? 'ИИ построит маршрут строго по вашей линии'
-              : 'Рисуйте одним пальцем · двумя — двигайте, колёсико — зум'}
+              ? partial
+                ? 'ИИ подстроит линию под реальные дороги. Можете нарисовать часть или весь маршрут'
+                : 'ИИ подстроит линию под реальные дороги'
+              : partial
+                ? 'Нарисуйте часть или весь маршрут до точки. ИИ подстроит под дороги'
+                : 'Рисуйте одним пальцем · двумя — двигайте, колёсико — зум'}
           </Text>
         </View>
       </View>

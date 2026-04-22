@@ -1,25 +1,31 @@
 import { useMemo, useState } from 'react';
-import { Modal, Pressable, ScrollView, View } from 'react-native';
+import { Pressable, ScrollView, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
+  ArrowDown,
   ArrowLeftRight,
-  ArrowUpDown,
+  ArrowUp,
   Bike,
   Brush,
   Bus,
-  Calendar,
   Car,
   ChevronDown,
   ChevronUp,
   Clock,
   Filter,
   Footprints,
+  Pause,
   Plus,
-  Users,
   X,
 } from 'lucide-react-native';
 
+import { DwellPicker } from '@/components/DwellPicker';
 import { Text } from '@/components/ui/text';
+import {
+  TimePickerModal,
+  formatTimePickerLabel,
+  type TimePickerKind,
+} from '@/components/TimePickerModal';
 import {
   allTransitLines,
   buildTransitOptions,
@@ -53,42 +59,10 @@ interface TransitPlannerProps {
   onSelectOption?: (option: TransitOption) => void;
 }
 
-type TimePickerKind = 'depart' | 'arrive';
-
-const DAY_OPTIONS: { key: string; label: string; offsetDays: number }[] = [
-  { key: 'today', label: 'Сегодня', offsetDays: 0 },
-  { key: 'tomorrow', label: 'Завтра', offsetDays: 1 },
-  { key: 'day_after', label: 'Послезавтра', offsetDays: 2 },
-  { key: 'd3', label: '+3 дня', offsetDays: 3 },
-  { key: 'd4', label: '+4 дня', offsetDays: 4 },
-  { key: 'd5', label: '+5 дней', offsetDays: 5 },
-  { key: 'd6', label: '+6 дней', offsetDays: 6 },
-];
-
-function formatTime(d: Date) {
+function formatHHMM(d: Date) {
   const hh = d.getHours().toString().padStart(2, '0');
   const mm = d.getMinutes().toString().padStart(2, '0');
   return `${hh}:${mm}`;
-}
-
-function formatDateLabel(d: Date) {
-  const now = new Date();
-  const isSameDay =
-    d.getDate() === now.getDate() &&
-    d.getMonth() === now.getMonth() &&
-    d.getFullYear() === now.getFullYear();
-  if (isSameDay) return 'Сегодня';
-  const tomorrow = new Date(now);
-  tomorrow.setDate(now.getDate() + 1);
-  if (
-    d.getDate() === tomorrow.getDate() &&
-    d.getMonth() === tomorrow.getMonth() &&
-    d.getFullYear() === tomorrow.getFullYear()
-  )
-    return 'Завтра';
-  const dd = d.getDate().toString().padStart(2, '0');
-  const mo = (d.getMonth() + 1).toString().padStart(2, '0');
-  return `${dd}.${mo}`;
 }
 
 export function TransitPlanner({
@@ -105,6 +79,8 @@ export function TransitPlanner({
   const removeStop = useTripStore((s) => s.removeStop);
   const setMode = useTripStore((s) => s.setMode);
   const drawnRoutes = useTripStore((s) => s.drawnRoutes);
+  const setDwell = useTripStore((s) => s.setDwell);
+  const moveStop = useTripStore((s) => s.moveStop);
 
   const [stopsCollapsed, setStopsCollapsed] = useState(false);
   const [timePickerKind, setTimePickerKind] = useState<TimePickerKind>('depart');
@@ -113,14 +89,21 @@ export function TransitPlanner({
   const [filterOpen, setFilterOpen] = useState(false);
   const [selectedLines, setSelectedLines] = useState<string[]>([]);
   const [detailOption, setDetailOption] = useState<TransitOption | null>(null);
-  const [detailExpanded, setDetailExpanded] = useState(false);
+  /** Detail sheet vertical position: compact (bottom half), expanded (near top), or collapsed (peek). */
+  const [detailPos, setDetailPos] = useState<'compact' | 'expanded' | 'collapsed'>(
+    'compact',
+  );
+  const [dwellPickerStopId, setDwellPickerStopId] = useState<string | null>(null);
+  const dwellStop = stops.find((s) => s.id === dwellPickerStopId);
 
   const travelSeconds = totalTravelSeconds(legs);
   const distanceMeters = totalDistanceMeters(legs);
 
-  const originLabel = stops[0]?.displayName || stops[0]?.label || 'Начало';
-  const destLabel =
-    stops[stops.length - 1]?.displayName || stops[stops.length - 1]?.label || 'Конец';
+  const originLabel =
+    stops[0]?.originKind === 'myLocation'
+      ? 'Моё местоположение'
+      : stops[0]?.label || 'Начало';
+  const destLabel = stops[stops.length - 1]?.label || 'Конец';
 
   const allOptions = useMemo(
     () =>
@@ -190,7 +173,6 @@ export function TransitPlanner({
         <View className="flex-row items-center gap-2 px-4 pt-2">
           <Pressable
             onPress={() => {
-              setTimePickerKind('depart');
               setTimeModal(true);
             }}
             className="flex-1 flex-row items-center gap-2 rounded-xl border border-border bg-card px-3 py-2"
@@ -201,7 +183,7 @@ export function TransitPlanner({
                 {timePickerKind === 'depart' ? 'Отправление' : 'Прибытие'}
               </Text>
               <Text className="text-xs font-semibold text-foreground" numberOfLines={1}>
-                {formatDateLabel(selectedDate)}, {formatTime(selectedDate)}
+                {formatTimePickerLabel(selectedDate)}
               </Text>
             </View>
           </Pressable>
@@ -278,11 +260,12 @@ export function TransitPlanner({
             {visibleStops.map((stop, idx) => {
               const color = STOP_COLORS[idx % STOP_COLORS.length];
               const isOrigin = idx === 0;
-              const stopText = stop.displayName || stop.label;
+              const isLast = idx === stops.length - 1;
+              const stopText = stop.label;
               const hasDrawnToThis = drawnRoutes.some((r) => r.toStopId === stop.id);
               return (
                 <View key={stop.id} className="px-4">
-                  <View className="flex-row items-center gap-3 py-1.5">
+                  <View className="flex-row items-center gap-2 py-1.5">
                     <View
                       className="h-6 w-6 items-center justify-center rounded-full"
                       style={{ backgroundColor: color }}
@@ -310,6 +293,14 @@ export function TransitPlanner({
                           </Text>
                           {stopText}
                         </Text>
+                        {!isLast && stop.dwellMinutes > 0 ? (
+                          <View className="mt-0.5 flex-row items-center gap-1 self-start rounded-full bg-amber-100 px-2 py-0.5 dark:bg-amber-500/20">
+                            <Pause size={9} color="#b45309" />
+                            <Text className="text-[10px] font-medium text-amber-800 dark:text-amber-300">
+                              пауза {stop.dwellMinutes} мин
+                            </Text>
+                          </View>
+                        ) : null}
                       </View>
                     )}
                     {!isOrigin && onDrawForStop ? (
@@ -325,6 +316,49 @@ export function TransitPlanner({
                           color={hasDrawnToThis ? '#2563eb' : '#666'}
                         />
                       </Pressable>
+                    ) : null}
+                    {/* Dwell */}
+                    {!isOrigin && !isLast ? (
+                      <Pressable
+                        onPress={() => setDwellPickerStopId(stop.id)}
+                        hitSlop={6}
+                        className={`h-7 px-2 flex-row items-center justify-center rounded-full ${
+                          stop.dwellMinutes > 0 ? 'bg-primary/10' : 'bg-muted'
+                        }`}
+                      >
+                        <Clock
+                          size={11}
+                          color={stop.dwellMinutes > 0 ? '#2563eb' : '#666'}
+                        />
+                        <Text
+                          className={`ml-1 text-[10px] font-medium ${
+                            stop.dwellMinutes > 0 ? 'text-primary' : 'text-foreground'
+                          }`}
+                        >
+                          {stop.dwellMinutes > 0 ? `${stop.dwellMinutes}м` : ''}
+                        </Text>
+                      </Pressable>
+                    ) : null}
+                    {/* Reorder */}
+                    {!isOrigin && stops.length > 2 ? (
+                      <View className="flex-row">
+                        <Pressable
+                          onPress={() => moveStop(stop.id, -1)}
+                          hitSlop={6}
+                          disabled={idx <= 1}
+                          className="p-0.5"
+                        >
+                          <ArrowUp size={13} color={idx <= 1 ? '#ccc' : '#666'} />
+                        </Pressable>
+                        <Pressable
+                          onPress={() => moveStop(stop.id, 1)}
+                          hitSlop={6}
+                          disabled={isLast}
+                          className="p-0.5"
+                        >
+                          <ArrowDown size={13} color={isLast ? '#ccc' : '#666'} />
+                        </Pressable>
+                      </View>
                     ) : null}
                     {!isOrigin ? (
                       <Pressable
@@ -391,7 +425,7 @@ export function TransitPlanner({
               key={opt.id}
               onPress={() => {
                 setDetailOption(opt);
-                setDetailExpanded(false);
+                setDetailPos('compact');
                 onSelectOption?.(opt);
               }}
               className="mx-4 mb-3 rounded-2xl border border-border bg-card p-3 active:bg-muted/50"
@@ -426,188 +460,90 @@ export function TransitPlanner({
         </ScrollView>
       </SafeAreaView>
 
-      {/* Time picker modal */}
-      <Modal
+      {/* Time picker modal (shared) */}
+      <TimePickerModal
         visible={timeModal}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setTimeModal(false)}
-      >
-        <Pressable
-          onPress={() => setTimeModal(false)}
-          className="flex-1 items-center justify-end bg-black/40"
-        >
-          <Pressable
-            onPress={(e) => e.stopPropagation()}
-            className="w-full rounded-t-3xl bg-card pb-6 pt-4"
-          >
-            <View className="mx-auto mb-3 h-1.5 w-12 rounded-full bg-muted-foreground/30" />
-            <View className="mx-4 flex-row rounded-xl bg-muted p-1">
-              <Pressable
-                onPress={() => setTimePickerKind('depart')}
-                className={`flex-1 items-center rounded-lg py-2 ${
-                  timePickerKind === 'depart' ? 'bg-card' : ''
-                }`}
-              >
-                <Text
-                  className={`text-sm font-semibold ${
-                    timePickerKind === 'depart' ? 'text-foreground' : 'text-muted-foreground'
-                  }`}
-                >
-                  Отправление
-                </Text>
-              </Pressable>
-              <Pressable
-                onPress={() => setTimePickerKind('arrive')}
-                className={`flex-1 items-center rounded-lg py-2 ${
-                  timePickerKind === 'arrive' ? 'bg-card' : ''
-                }`}
-              >
-                <Text
-                  className={`text-sm font-semibold ${
-                    timePickerKind === 'arrive' ? 'text-foreground' : 'text-muted-foreground'
-                  }`}
-                >
-                  Прибытие
-                </Text>
-              </Pressable>
-            </View>
+        value={selectedDate}
+        kind={timePickerKind}
+        onChange={setSelectedDate}
+        onChangeKind={setTimePickerKind}
+        onClose={() => setTimeModal(false)}
+      />
 
-            <Text className="mx-4 mt-4 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              День
-            </Text>
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 8, gap: 8 }}
-            >
-              {DAY_OPTIONS.map((d) => {
-                const now = new Date();
-                const target = new Date(now);
-                target.setDate(now.getDate() + d.offsetDays);
-                const active =
-                  selectedDate.getDate() === target.getDate() &&
-                  selectedDate.getMonth() === target.getMonth();
-                return (
-                  <Pressable
-                    key={d.key}
-                    onPress={() => {
-                      const next = new Date(target);
-                      next.setHours(
-                        selectedDate.getHours(),
-                        selectedDate.getMinutes(),
-                      );
-                      setSelectedDate(next);
-                    }}
-                    className={`rounded-xl border px-4 py-2 ${
-                      active ? 'border-primary bg-primary' : 'border-border bg-muted'
-                    }`}
-                  >
-                    <Text
-                      className={`text-sm font-medium ${
-                        active ? 'text-primary-foreground' : 'text-foreground'
-                      }`}
-                    >
-                      {d.label}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
+      {/* Dwell picker */}
+      <DwellPicker
+        visible={dwellPickerStopId !== null}
+        currentMinutes={dwellStop?.dwellMinutes ?? 0}
+        stopLabel={dwellStop?.label}
+        onClose={() => setDwellPickerStopId(null)}
+        onSelect={(m) => {
+          if (dwellPickerStopId) setDwell(dwellPickerStopId, m);
+          setDwellPickerStopId(null);
+        }}
+      />
 
-            <Text className="mx-4 mt-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              Время
-            </Text>
-            <View className="mx-4 mt-2 flex-row items-center gap-3">
-              <Pressable
-                onPress={() => {
-                  const next = new Date(selectedDate);
-                  next.setMinutes(next.getMinutes() - 15);
-                  setSelectedDate(next);
-                }}
-                className="h-10 w-10 items-center justify-center rounded-full bg-muted"
-              >
-                <Text className="text-lg font-bold text-foreground">−</Text>
-              </Pressable>
-              <View className="flex-1 items-center rounded-xl bg-muted py-3">
-                <Text className="text-2xl font-bold text-foreground">
-                  {formatTime(selectedDate)}
-                </Text>
-              </View>
-              <Pressable
-                onPress={() => {
-                  const next = new Date(selectedDate);
-                  next.setMinutes(next.getMinutes() + 15);
-                  setSelectedDate(next);
-                }}
-                className="h-10 w-10 items-center justify-center rounded-full bg-muted"
-              >
-                <Text className="text-lg font-bold text-foreground">+</Text>
-              </Pressable>
-            </View>
-
-            <Pressable
-              onPress={() => setTimeModal(false)}
-              className="mx-4 mt-5 items-center rounded-2xl bg-primary py-3"
-            >
-              <Text className="text-base font-semibold text-primary-foreground">
-                Готово
-              </Text>
-            </Pressable>
-          </Pressable>
-        </Pressable>
-      </Modal>
-
-      {/* Detail sheet — 2/3 map + 1/3 detail, expandable to almost full-screen */}
+      {/* Detail sheet — half-screen bottom, can be expanded up or collapsed to peek.
+          Map remains visible in the other half. No black overlay so user can see route. */}
       {detailOption ? (
-        <Pressable
-          onPress={() => setDetailOption(null)}
-          className="absolute inset-0 z-50 bg-black/30"
+        <View
+          pointerEvents="box-none"
+          style={{
+            position: 'absolute',
+            left: 0,
+            right: 0,
+            bottom: 0,
+            top:
+              detailPos === 'expanded'
+                ? 60
+                : detailPos === 'compact'
+                  ? '50%'
+                  : '82%',
+          }}
+          className="overflow-hidden rounded-t-3xl bg-card"
         >
           <Pressable
-            onPress={(e) => e.stopPropagation()}
-            style={{
-              position: 'absolute',
-              left: 0,
-              right: 0,
-              bottom: 0,
-              top: detailExpanded ? 60 : '66%',
-            }}
-            className="overflow-hidden rounded-t-3xl bg-card"
+            onPress={() =>
+              setDetailPos((p) =>
+                p === 'collapsed' ? 'compact' : p === 'compact' ? 'expanded' : 'collapsed',
+              )
+            }
+            className="items-center py-2"
+            hitSlop={10}
           >
-            <Pressable
-              onPress={() => setDetailExpanded((v) => !v)}
-              className="items-center py-2"
-              hitSlop={10}
-            >
-              <View className="h-1.5 w-12 rounded-full bg-muted-foreground/40" />
-            </Pressable>
-            <View className="border-b border-border px-4 pb-3">
-              <View className="flex-row items-center justify-between">
-                <Text className="text-xl font-bold text-foreground">
-                  {formatDuration(detailOption.durationSeconds)}
-                </Text>
-                <Pressable
-                  onPress={() => setDetailOption(null)}
-                  hitSlop={8}
-                  className="h-8 w-8 items-center justify-center rounded-full bg-muted"
-                >
-                  <X size={14} color="#666" />
-                </Pressable>
-              </View>
-              <Text className="text-xs text-muted-foreground" numberOfLines={1}>
-                {detailOption.description} · {formatDistance(distanceMeters)} ·{' '}
-                отправление через {detailOption.departureInMinutes} мин
+            <View className="h-1.5 w-12 rounded-full bg-muted-foreground/40" />
+          </Pressable>
+          <View className="border-b border-border px-4 pb-3">
+            <View className="flex-row items-center justify-between">
+              <Text className="text-lg font-bold text-foreground">
+                {formatDuration(detailOption.durationSeconds)}
               </Text>
+              <Pressable
+                onPress={() => setDetailOption(null)}
+                hitSlop={8}
+                className="h-7 w-7 items-center justify-center rounded-full bg-muted"
+              >
+                <X size={14} color="#666" />
+              </Pressable>
             </View>
+            <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+              {detailOption.description} · {formatDistance(distanceMeters)} · отпр. через{' '}
+              {detailOption.departureInMinutes} мин
+            </Text>
+          </View>
+          {detailPos !== 'collapsed' ? (
             <ScrollView
-              contentContainerStyle={{ padding: 16 }}
+              contentContainerStyle={{ padding: 16, paddingBottom: 24 }}
               showsVerticalScrollIndicator={false}
             >
-              <TimelineView option={detailOption} origin={originLabel} destination={destLabel} />
+              <TimelineView
+                option={detailOption}
+                origin={originLabel}
+                destination={destLabel}
+                departureAt={selectedDate}
+              />
             </ScrollView>
-          </Pressable>
-        </Pressable>
+          ) : null}
+        </View>
       ) : null}
     </View>
   );
@@ -652,35 +588,38 @@ function TimelineView({
   option,
   origin,
   destination,
+  departureAt,
 }: {
   option: TransitOption;
   origin: string;
   destination: string;
+  departureAt: Date;
 }) {
   // Detect consecutive bus segments at same transfer point (Пересадка) — show as paired boxes.
   const rows: React.ReactNode[] = [];
+  let elapsed = 0; // seconds accumulated up to the current row
+  const at = (sec: number) => {
+    const d = new Date(departureAt.getTime() + sec * 1000);
+    return formatHHMM(d);
+  };
   for (let i = 0; i < option.segments.length; i++) {
     const seg = option.segments[i];
     const next = option.segments[i + 1];
     const isBusTransfer =
       seg.kind === 'bus' && next && next.kind === 'bus' && seg.to === next.from;
 
-    const locLabel =
-      i === 0 ? origin : seg.from;
+    const locLabel = i === 0 ? origin : seg.from;
     rows.push(
       <View key={`loc-${i}`} className="flex-row items-center gap-3">
         <View className="h-3 w-3 rounded-full border-2 border-primary bg-card" />
         <Text className="flex-1 text-sm font-semibold text-foreground" numberOfLines={1}>
           {locLabel}
         </Text>
-        <Text className="text-[11px] text-muted-foreground">
-          {seg.kind === 'walk' ? '' : formatTime(new Date(Date.now() + i * 60 * 5 * 1000))}
-        </Text>
+        <Text className="text-[11px] text-muted-foreground">{at(elapsed)}</Text>
       </View>,
     );
 
     if (isBusTransfer) {
-      // Render the transfer "pair boxes with arrow" block
       rows.push(
         <View
           key={`seg-transfer-${i}`}
@@ -688,9 +627,7 @@ function TimelineView({
         >
           <View className="flex-row items-center gap-2">
             <View className="rounded-md bg-primary px-2 py-1">
-              <Text className="text-xs font-bold text-primary-foreground">
-                {seg.line}
-              </Text>
+              <Text className="text-xs font-bold text-primary-foreground">{seg.line}</Text>
             </View>
             <ArrowLeftRight size={14} color="#8b5cf6" />
             <View className="rounded-md bg-primary px-2 py-1">
@@ -709,34 +646,26 @@ function TimelineView({
           </View>
         </View>,
       );
-      // Combined segment for the first bus
       rows.push(
-        <View
-          key={`seg-${i}-info`}
-          className="ml-1 border-l-2 border-primary pl-5 py-2"
-        >
+        <View key={`seg-${i}-info`} className="ml-1 border-l-2 border-primary pl-5 py-2">
           <Text className="text-xs text-muted-foreground">
             {seg.line} · {seg.stopsCount ?? '—'} ост. · {formatDuration(seg.durationSeconds)}
           </Text>
         </View>,
       );
-      // Next iteration's bus segment will be rendered normally — skip it.
+      elapsed += seg.durationSeconds;
       i++;
-      // But we still need to add the arrival at next.to (the 2nd bus's end).
       rows.push(
-        <View
-          key={`seg-${i}-info2`}
-          className="ml-1 border-l-2 border-primary pl-5 py-2"
-        >
+        <View key={`seg-${i}-info2`} className="ml-1 border-l-2 border-primary pl-5 py-2">
           <Text className="text-xs text-muted-foreground">
             {next.line} · {next.stopsCount ?? '—'} ост. · {formatDuration(next.durationSeconds)}
           </Text>
         </View>,
       );
+      elapsed += next.durationSeconds;
       continue;
     }
 
-    // Normal segment
     if (seg.kind === 'walk') {
       rows.push(
         <View
@@ -746,9 +675,7 @@ function TimelineView({
           <Footprints size={14} color="#059669" />
           <Text className="text-xs text-foreground">
             Пешком · {formatDuration(seg.durationSeconds)}
-            {seg.distanceMeters > 0
-              ? ` · ${formatDistance(seg.distanceMeters)}`
-              : ''}
+            {seg.distanceMeters > 0 ? ` · ${formatDistance(seg.distanceMeters)}` : ''}
           </Text>
         </View>,
       );
@@ -760,9 +687,7 @@ function TimelineView({
         >
           <Bus size={14} color="#8b5cf6" />
           <View className="rounded-md bg-primary px-1.5 py-0.5">
-            <Text className="text-xs font-bold text-primary-foreground">
-              {seg.line}
-            </Text>
+            <Text className="text-xs font-bold text-primary-foreground">{seg.line}</Text>
           </View>
           <Text className="text-xs text-foreground">
             {seg.stopsCount ?? '—'} ост. · {formatDuration(seg.durationSeconds)}
@@ -770,6 +695,7 @@ function TimelineView({
         </View>,
       );
     }
+    elapsed += seg.durationSeconds;
   }
 
   // Final destination marker
@@ -779,13 +705,9 @@ function TimelineView({
       <Text className="flex-1 text-sm font-semibold text-foreground" numberOfLines={1}>
         {destination}
       </Text>
+      <Text className="text-[11px] text-muted-foreground">{at(elapsed)}</Text>
     </View>,
   );
-
-  // Unused import fix-up: silence when not used
-  void Calendar;
-  void ArrowUpDown;
-  void Users;
 
   return <View className="gap-1">{rows}</View>;
 }

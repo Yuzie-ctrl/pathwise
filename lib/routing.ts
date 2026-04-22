@@ -11,6 +11,57 @@ export interface GeocodeResult {
   longitude: number;
 }
 
+interface NominatimAddress {
+  road?: string;
+  pedestrian?: string;
+  footway?: string;
+  path?: string;
+  cycleway?: string;
+  residential?: string;
+  street?: string;
+  house_number?: string;
+  neighbourhood?: string;
+  suburb?: string;
+  hamlet?: string;
+  village?: string;
+  town?: string;
+  city?: string;
+  city_district?: string;
+  state?: string;
+}
+
+/**
+ * Build a concise address label "Street N" (street first, then number).
+ * Falls back sensibly when the address has no street / no number.
+ */
+export function formatAddressShort(
+  addr: NominatimAddress | undefined,
+  fallback: string,
+): string {
+  if (!addr) return fallback;
+  const street =
+    addr.road ||
+    addr.pedestrian ||
+    addr.footway ||
+    addr.path ||
+    addr.cycleway ||
+    addr.residential ||
+    addr.street;
+  const number = addr.house_number;
+  if (street && number) return `${street} ${number}`;
+  if (street) return street;
+  const area =
+    addr.neighbourhood ||
+    addr.suburb ||
+    addr.hamlet ||
+    addr.village ||
+    addr.town ||
+    addr.city ||
+    addr.city_district;
+  if (area) return area;
+  return fallback;
+}
+
 export async function geocodeSearch(
   query: string,
   signal?: AbortSignal,
@@ -35,14 +86,21 @@ export async function geocodeSearch(
     name?: string;
     lat: string;
     lon: string;
+    address?: NominatimAddress;
   }[];
 
-  return data.map((item) => ({
-    displayName: item.display_name,
-    shortName: item.name || item.display_name.split(',')[0],
-    latitude: parseFloat(item.lat),
-    longitude: parseFloat(item.lon),
-  }));
+  return data.map((item) => {
+    const short = formatAddressShort(
+      item.address,
+      item.name || item.display_name.split(',')[0],
+    );
+    return {
+      displayName: short,
+      shortName: short,
+      latitude: parseFloat(item.lat),
+      longitude: parseFloat(item.lon),
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -344,9 +402,7 @@ export async function matchDrawnRoute(
     return { coordinates: points, distanceMeters: 0, durationSeconds: 0 };
   }
 
-  // Average distance between consecutive raw points, in meters.
-  // Low (<15m) → user was drawing finely at high zoom → preserve detail.
-  // High (>60m) → user was sketching at low zoom → prefer main roads.
+  // Measure how finely the user drew (avg meters between consecutive points).
   let totalLen = 0;
   let segCount = 0;
   for (let i = 1; i < points.length; i++) {
@@ -354,58 +410,35 @@ export async function matchDrawnRoute(
     segCount++;
   }
   const avgSpacing = segCount > 0 ? totalLen / segCount : 0;
-  const detailLevel = avgSpacing < 15 ? 'fine' : avgSpacing > 60 ? 'coarse' : 'medium';
+  const fine = avgSpacing < 20;
 
-  const waypointCount =
-    detailLevel === 'fine' ? 40 : detailLevel === 'coarse' ? 12 : 22;
-  const radiusMeters =
-    detailLevel === 'fine' ? 20 : detailLevel === 'coarse' ? 180 : 60;
-
-  const resampled = resampleByDistance(points, waypointCount);
+  // /match needs a trace that hugs the road: dense, ordered points.
+  // OSRM matching profile: we want each sample snapped to the CLOSEST road.
+  // More samples = tighter conformance to drawing.
+  const targetCount = fine ? 80 : Math.max(40, Math.min(90, Math.round(totalLen / 25)));
+  const resampled = resampleByDistance(points, targetCount);
   if (resampled.length < 2) {
     return { coordinates: points, distanceMeters: 0, durationSeconds: 0 };
   }
 
   const profile = OSRM_PROFILES[mode];
-  const coords = resampled.map((p) => `${p.longitude},${p.latitude}`).join(';');
-  const radii = resampled.map(() => radiusMeters).join(';');
-  const url =
-    `https://router.project-osrm.org/route/v1/${profile}/${coords}` +
-    `?overview=full&geometries=geojson&continue_straight=false&radiuses=${radii}`;
 
+  // --- Primary: OSRM /match ------------------------------------------------
+  // `radiuses` per-point controls how far OSRM may snap each sample. When the
+  // drawing is fine we want tight snap (stay on the small road the user drew);
+  // when the drawing is coarse, slightly more leeway so big roads win.
+  const matchRadius = fine ? 25 : 45;
   try {
-    const res = await fetch(url, { signal });
-    if (!res.ok) throw new Error(`Route failed: ${res.status}`);
-    const data = (await res.json()) as {
-      code: string;
-      routes?: {
-        distance: number;
-        duration: number;
-        geometry: { coordinates: [number, number][] };
-      }[];
-    };
-    if (data.code !== 'Ok' || !data.routes?.length) {
-      throw new Error('No route');
-    }
-    const r = data.routes[0];
-    const coords2 = r.geometry.coordinates.map(([lon, lat]) => ({
-      latitude: lat,
-      longitude: lon,
-    }));
-    return {
-      coordinates: coords2,
-      distanceMeters: r.distance,
-      durationSeconds: r.duration,
-    };
-  } catch {
-    // Fallback: try /match, then raw drawn points.
-    try {
-      const matchCoords = resampled
-        .map((p) => `${p.longitude},${p.latitude}`)
-        .join(';');
-      const matchRadii = resampled.map(() => Math.max(20, radiusMeters / 2)).join(';');
-      const matchUrl = `https://router.project-osrm.org/match/v1/${profile}/${matchCoords}?overview=full&geometries=geojson&radiuses=${matchRadii}&gaps=ignore&tidy=true`;
-      const res = await fetch(matchUrl, { signal });
+    const coordsStr = resampled
+      .map((p) => `${p.longitude},${p.latitude}`)
+      .join(';');
+    const radii = resampled.map(() => matchRadius).join(';');
+    const matchUrl =
+      `https://router.project-osrm.org/match/v1/${profile}/${coordsStr}` +
+      `?overview=full&geometries=geojson&radiuses=${radii}` +
+      `&gaps=ignore&tidy=false&annotations=false`;
+    const res = await fetch(matchUrl, { signal });
+    if (res.ok) {
       const data = (await res.json()) as {
         code: string;
         matchings?: {
@@ -415,36 +448,91 @@ export async function matchDrawnRoute(
         }[];
       };
       if (data.code === 'Ok' && data.matchings?.length) {
-        const result: MatchedPoint[] = [];
+        // Stitch all matching segments in order into a single polyline,
+        // deduping endpoint repeats.
+        const stitched: MatchedPoint[] = [];
         let dist = 0;
         let dur = 0;
         for (const m of data.matchings) {
           for (const [lon, lat] of m.geometry.coordinates) {
-            result.push({ latitude: lat, longitude: lon });
+            const pt = { latitude: lat, longitude: lon };
+            const last = stitched[stitched.length - 1];
+            if (
+              !last ||
+              Math.abs(last.latitude - pt.latitude) > 1e-7 ||
+              Math.abs(last.longitude - pt.longitude) > 1e-7
+            ) {
+              stitched.push(pt);
+            }
           }
           dist += m.distance ?? 0;
           dur += m.duration ?? 0;
         }
+        if (stitched.length >= 2) {
+          return {
+            coordinates: stitched,
+            distanceMeters: dist || routeDistanceMetersFlat(stitched),
+            durationSeconds: dur || stitched.length * 2,
+          };
+        }
+      }
+    }
+  } catch {
+    // fall through
+  }
+
+  // --- Fallback: /route that must visit each resampled waypoint ------------
+  try {
+    const coords = resampled.map((p) => `${p.longitude},${p.latitude}`).join(';');
+    const radii = resampled.map(() => matchRadius * 2).join(';');
+    const url =
+      `https://router.project-osrm.org/route/v1/${profile}/${coords}` +
+      `?overview=full&geometries=geojson&continue_straight=false&radiuses=${radii}`;
+    const res = await fetch(url, { signal });
+    if (res.ok) {
+      const data = (await res.json()) as {
+        code: string;
+        routes?: {
+          distance: number;
+          duration: number;
+          geometry: { coordinates: [number, number][] };
+        }[];
+      };
+      if (data.code === 'Ok' && data.routes?.length) {
+        const r = data.routes[0];
+        const coords2 = r.geometry.coordinates.map(([lon, lat]) => ({
+          latitude: lat,
+          longitude: lon,
+        }));
         return {
-          coordinates: result,
-          distanceMeters: dist,
-          durationSeconds: dur,
+          coordinates: coords2,
+          distanceMeters: r.distance,
+          durationSeconds: r.duration,
         };
       }
-    } catch {
-      // ignore
     }
-    // Compute raw-line length as a last resort.
-    let rawDist = 0;
-    for (let i = 1; i < resampled.length; i++) {
-      rawDist += haversine(resampled[i - 1], resampled[i]);
-    }
-    return {
-      coordinates: resampled,
-      distanceMeters: rawDist,
-      durationSeconds: rawDist / 8.3,
-    };
+  } catch {
+    // fall through
   }
+
+  // Last resort — raw line.
+  let rawDist = 0;
+  for (let i = 1; i < resampled.length; i++) {
+    rawDist += haversine(resampled[i - 1], resampled[i]);
+  }
+  return {
+    coordinates: resampled,
+    distanceMeters: rawDist,
+    durationSeconds: rawDist / 8.3,
+  };
+}
+
+function routeDistanceMetersFlat(
+  points: { latitude: number; longitude: number }[],
+): number {
+  let d = 0;
+  for (let i = 1; i < points.length; i++) d += haversine(points[i - 1], points[i]);
+  return d;
 }
 
 /**

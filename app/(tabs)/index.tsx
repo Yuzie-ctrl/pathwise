@@ -71,6 +71,7 @@ export default function Home() {
     latitude: number;
     longitude: number;
   } | null>(null);
+  const [heading, setHeading] = useState<number | null>(null);
   const [plannerCollapsed, setPlannerCollapsed] = useState(false);
   const [searchMode, setSearchMode] = useState<null | 'destination' | 'origin' | 'stop'>(
     null,
@@ -145,6 +146,38 @@ export default function Home() {
         // ignore
       }
     })();
+  }, []);
+
+  // Watch device heading for the directional user-location arrow
+  useEffect(() => {
+    let sub: Location.LocationSubscription | null = null;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { status } = await Location.getForegroundPermissionsAsync();
+        if (status !== 'granted') return;
+        sub = await Location.watchHeadingAsync((h) => {
+          if (cancelled) return;
+          // Use true heading when trustworthy, otherwise magnetic.
+          const deg = h.trueHeading >= 0 ? h.trueHeading : h.magHeading;
+          if (typeof deg === 'number' && Number.isFinite(deg)) {
+            setHeading(deg);
+          }
+        });
+      } catch {
+        // heading unavailable on this device / platform — silent fallback
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (sub) {
+        try {
+          sub.remove();
+        } catch {
+          // ignore
+        }
+      }
+    };
   }, []);
 
   // ---------------------------------------------------------------------
@@ -290,14 +323,26 @@ export default function Home() {
     });
 
     if (userLocation) {
+      // Heading-aware blue-dot with a directional arrow. badgeHtml so the
+      // map renderer displays our styled element (no pin).
+      const arrowHtml = `<div style="position:relative;width:40px;height:40px;pointer-events:none;display:flex;align-items:center;justify-content:center">
+  <div style="position:absolute;inset:0;border-radius:9999px;background:rgba(59,130,246,0.18)"></div>
+  <div style="position:absolute;width:18px;height:18px;border-radius:9999px;background:#3b82f6;border:3px solid #fff;box-shadow:0 1px 6px rgba(0,0,0,0.35)"></div>
+  ${
+    heading != null
+      ? `<div style="position:absolute;top:-2px;left:50%;width:0;height:0;border-left:8px solid transparent;border-right:8px solid transparent;border-bottom:14px solid #3b82f6;transform:translateX(-50%)"></div>`
+      : ''
+  }
+</div>`;
       out.push({
         id: 'user',
         coordinate: userLocation,
-        color: 'blue',
+        badgeHtml: arrowHtml,
+        rotationDegrees: heading ?? 0,
       });
     }
     return out;
-  }, [stops, legs, userLocation, style]);
+  }, [stops, legs, userLocation, style, heading]);
 
   // ---------------------------------------------------------------------
   // Handlers
@@ -610,7 +655,7 @@ export default function Home() {
       ) : null}
 
       {/* Planner bottom sheet (non-transit modes) */}
-      {plannerVisible && !navigating && mode !== 'transit' ? (
+      {plannerVisible && !navigating && !drawing && mode !== 'transit' ? (
         <RoutePlanner
           collapsed={plannerCollapsed}
           onToggleCollapsed={() => setPlannerCollapsed((v) => !v)}
@@ -623,7 +668,7 @@ export default function Home() {
       ) : null}
 
       {/* Transit full-screen planner */}
-      {plannerVisible && !navigating && mode === 'transit' ? (
+      {plannerVisible && !navigating && !drawing && mode === 'transit' ? (
         <TransitPlanner
           onClose={handleClosePlanner}
           onAddStop={openStopSearch}
@@ -640,6 +685,7 @@ export default function Home() {
           onCancel={handleCancelDrawing}
           onConfirm={handleConfirmDrawing}
           processing={drawProcessing}
+          partial={drawTargetStopId !== null}
         />
       ) : null}
 

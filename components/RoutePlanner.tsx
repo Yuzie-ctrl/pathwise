@@ -12,13 +12,17 @@ import {
   Navigation2,
   Pause,
   Plus,
-  Trash2,
   X,
 } from 'lucide-react-native';
 
 import { DwellPicker } from '@/components/DwellPicker';
 import { SearchSheet } from '@/components/SearchSheet';
 import { Text } from '@/components/ui/text';
+import {
+  TimePickerModal,
+  formatTimePickerLabel,
+  type TimePickerKind,
+} from '@/components/TimePickerModal';
 import {
   formatDistance,
   formatDuration,
@@ -73,12 +77,14 @@ export function RoutePlanner({
   const removeStop = useTripStore((s) => s.removeStop);
   const setDwell = useTripStore((s) => s.setDwell);
   const moveStop = useTripStore((s) => s.moveStop);
-  const clearStops = useTripStore((s) => s.clearStops);
   const setMode = useTripStore((s) => s.setMode);
   const drawnRoutes = useTripStore((s) => s.drawnRoutes);
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [dwellPickerStopId, setDwellPickerStopId] = useState<string | null>(null);
+  const [timeModal, setTimeModal] = useState(false);
+  const [timeKind, setTimeKind] = useState<TimePickerKind>('depart');
+  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
 
   const dwellStop = stops.find((s) => s.id === dwellPickerStopId);
 
@@ -190,15 +196,6 @@ export function RoutePlanner({
               </Text>
             </View>
             <View className="flex-row items-center gap-1">
-              {stops.length > 1 ? (
-                <Pressable
-                  onPress={clearStops}
-                  hitSlop={8}
-                  className="rounded-full p-2 active:bg-muted"
-                >
-                  <Trash2 size={18} color="#888" />
-                </Pressable>
-              ) : null}
               <Pressable
                 onPress={onClose}
                 hitSlop={8}
@@ -210,7 +207,7 @@ export function RoutePlanner({
           </View>
 
           {/* Transport mode toggle */}
-          <View className="flex-row gap-2 px-4 pb-3">
+          <View className="flex-row gap-2 px-4 pb-2">
             {(Object.keys(MODE_CONFIG) as TransportMode[]).map((m) => {
               const cfg = MODE_CONFIG[m];
               const Icon = cfg.icon;
@@ -234,6 +231,24 @@ export function RoutePlanner({
                 </Pressable>
               );
             })}
+          </View>
+
+          {/* Time picker trigger */}
+          <View className="px-4 pb-3">
+            <Pressable
+              onPress={() => setTimeModal(true)}
+              className="flex-row items-center gap-2 rounded-xl border border-border bg-card px-3 py-2 active:bg-muted/50"
+            >
+              <Clock size={14} color="#2563eb" />
+              <View className="flex-1">
+                <Text className="text-[10px] font-medium text-muted-foreground">
+                  {timeKind === 'depart' ? 'Отправление' : 'Прибытие'}
+                </Text>
+                <Text className="text-xs font-semibold text-foreground" numberOfLines={1}>
+                  {formatTimePickerLabel(selectedDate)}
+                </Text>
+              </View>
+            </Pressable>
           </View>
 
           {/* Summary */}
@@ -274,7 +289,7 @@ export function RoutePlanner({
               const isFirst = idx === 0;
               const isLast = idx === stops.length - 1;
               const isOrigin = isFirst;
-              const stopText = stop.displayName || stop.label;
+              const stopText = stop.label;
               const hasDrawnToThis = drawnRoutes.some(
                 (r) => r.toStopId === stop.id,
               );
@@ -466,6 +481,15 @@ export function RoutePlanner({
           if (dwellPickerStopId) setDwell(dwellPickerStopId, m);
           setDwellPickerStopId(null);
         }}
+      />
+
+      <TimePickerModal
+        visible={timeModal}
+        value={selectedDate}
+        kind={timeKind}
+        onChange={setSelectedDate}
+        onChangeKind={setTimeKind}
+        onClose={() => setTimeModal(false)}
       />
     </View>
   );

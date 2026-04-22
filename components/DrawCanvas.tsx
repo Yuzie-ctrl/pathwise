@@ -17,6 +17,8 @@ interface DrawCanvasProps {
   onConfirm: (coords: { latitude: number; longitude: number }[]) => void;
   onRegionChange?: (region: MapRegion) => void;
   processing?: boolean;
+  /** When true, the drawing will be used as a partial route to the current destination. */
+  partial?: boolean;
 }
 
 /**
@@ -34,6 +36,7 @@ export function DrawCanvas({
   onCancel,
   onConfirm,
   processing,
+  partial,
 }: DrawCanvasProps) {
   const [size, setSize] = useState<{ width: number; height: number }>({
     width: 0,
@@ -269,8 +272,12 @@ export function DrawCanvas({
           <Sparkles size={16} color="#2563eb" />
           <Text className="flex-1 text-sm text-foreground">
             {hasDrawn
-              ? 'ИИ построит маршрут строго по вашей линии'
-              : 'Одним пальцем — рисуйте, двумя — двигайте и приближайте'}
+              ? partial
+                ? 'ИИ подстроит линию под реальные дороги. Можете нарисовать часть или весь маршрут'
+                : 'ИИ подстроит линию под реальные дороги'
+              : partial
+                ? 'Нарисуйте часть или весь маршрут до точки. ИИ подстроит под дороги'
+                : 'Одним пальцем — рисуйте, двумя — двигайте и приближайте'}
           </Text>
         </View>
       </View>

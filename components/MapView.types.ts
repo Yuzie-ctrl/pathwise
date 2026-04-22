@@ -53,6 +53,10 @@ export interface MapMarker {
   badgeText?: string;
   /** Background color for a badge marker (CSS color) */
   badgeColor?: string;
+  /** Custom HTML/Emoji for a "raw" badge (e.g. heading arrow). Replaces badgeText rendering. */
+  badgeHtml?: string;
+  /** Rotate the badge/icon by this many degrees. Applied via CSS transform. */
+  rotationDegrees?: number;
 }
 
 // ---------------------------------------------------------------------------
