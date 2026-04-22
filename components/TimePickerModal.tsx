@@ -364,6 +364,13 @@ export function TimePickerModal({
               <Text className="text-sm font-bold text-foreground">−5 мин</Text>
             </Pressable>
             <Pressable
+              onPress={() => onChange(new Date())}
+              hitSlop={8}
+              className="h-11 flex-1 items-center justify-center rounded-full bg-primary/10 active:bg-primary/20"
+            >
+              <Text className="text-sm font-bold text-primary">Сейчас</Text>
+            </Pressable>
+            <Pressable
               onPress={() => bumpMinutes(5)}
               hitSlop={8}
               className="h-11 flex-1 items-center justify-center rounded-full bg-muted active:bg-muted/70"

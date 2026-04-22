@@ -95,7 +95,10 @@ export async function geocodeSearch(
       item.name || item.display_name.split(',')[0],
     );
     return {
-      displayName: short,
+      // Keep the full, comma-separated Nominatim description (city, postal code,
+      // region, country) so UI can render a secondary detail line under the
+      // short street-address title.
+      displayName: item.display_name,
       shortName: short,
       latitude: parseFloat(item.lat),
       longitude: parseFloat(item.lon),

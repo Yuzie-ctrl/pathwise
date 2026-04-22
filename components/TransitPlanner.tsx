@@ -456,13 +456,11 @@ export function TransitPlanner({
                           size={11}
                           color={stop.dwellMinutes > 0 ? '#2563eb' : '#666'}
                         />
-                        <Text
-                          className={`ml-1 text-[10px] font-medium ${
-                            stop.dwellMinutes > 0 ? 'text-primary' : 'text-foreground'
-                          }`}
-                        >
-                          {stop.dwellMinutes > 0 ? `${stop.dwellMinutes}м` : ''}
-                        </Text>
+                        {stop.dwellMinutes === 0 ? (
+                          <Text className="ml-1 text-[10px] font-medium text-foreground">
+                            Пауза
+                          </Text>
+                        ) : null}
                       </Pressable>
                     ) : null}
                     {/* Reorder */}

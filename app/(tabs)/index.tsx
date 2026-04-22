@@ -453,7 +453,10 @@ export default function Home() {
       setSearchMode(null);
       return;
     }
-    // Destination flow: ensure origin exists (as myLocation) first
+    // Destination flow from the main screen: this is the very first
+    // destination the user is planning → default to walking mode so the
+    // freshly-opened planner lands on "Пешком" automatically.
+    const isFirstDestination = stops.length === 0;
     ensureOriginFromUser();
     addStop({
       label: r.shortName,
@@ -461,6 +464,9 @@ export default function Home() {
       latitude: r.latitude,
       longitude: r.longitude,
     });
+    if (isFirstDestination) {
+      useTripStore.getState().setMode('walking');
+    }
     setSearchMode(null);
     setPlannerCollapsed(false);
   };
@@ -563,10 +569,11 @@ export default function Home() {
       const first = matched.coordinates[0];
       const last = matched.coordinates[matched.coordinates.length - 1];
       clearStops();
-      // Fresh drawn trip — default to walking because a freehand path is
-      // usually pedestrian-intent. Anything else would require an existing
-      // trip which we don't have here.
-      useTripStore.getState().setMode('walking');
+      // Keep whatever mode is currently selected — the drawn polyline should
+      // render using the same style rules as any other leg (dashed for
+      // walking, solid for driving/transit/cycling). Forcing walking here
+      // would visually "highlight" the drawn route differently from the
+      // rest, which is exactly what we don't want.
       setOriginToPlace({
         label: 'Начало маршрута',
         latitude: first.latitude,

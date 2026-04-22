@@ -378,13 +378,11 @@ export function RoutePlanner({
                           size={14}
                           color={stop.dwellMinutes > 0 ? '#2563eb' : '#666'}
                         />
-                        <Text
-                          className={`text-xs font-medium ${
-                            stop.dwellMinutes > 0 ? 'text-primary' : 'text-foreground'
-                          }`}
-                        >
-                          {stop.dwellMinutes > 0 ? `${stop.dwellMinutes}м` : 'Время'}
-                        </Text>
+                        {stop.dwellMinutes === 0 ? (
+                          <Text className="text-xs font-medium text-foreground">
+                            Пауза
+                          </Text>
+                        ) : null}
                       </Pressable>
                     ) : null}
 

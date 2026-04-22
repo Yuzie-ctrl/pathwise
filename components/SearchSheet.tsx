@@ -192,32 +192,50 @@ export function SearchSheet({
                 <Text className="text-xs text-primary">Очистить</Text>
               </Pressable>
             </View>
-            {history.map((h, i) => (
-              <Pressable
-                key={`${h.latitude}-${h.longitude}-${i}`}
-                onPress={() =>
-                  handleSelect({
-                    displayName: h.displayName || h.label,
-                    shortName: h.label,
-                    latitude: h.latitude,
-                    longitude: h.longitude,
-                  })
-                }
-                className="flex-row items-start gap-3 border-b border-border px-4 py-3 active:bg-muted"
-              >
-                <View className="mt-1">
-                  <Clock size={18} color="#888" />
-                </View>
-                <View className="flex-1">
-                  <Text
-                    className="text-base text-foreground"
-                    numberOfLines={1}
-                  >
-                    {h.label}
-                  </Text>
-                </View>
-              </Pressable>
-            ))}
+            {history.map((h, i) => {
+              const detail =
+                h.displayName && h.displayName !== h.label
+                  ? // strip leading duplicate of short label if present
+                    h.displayName.replace(
+                      new RegExp(`^${h.label.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')},?\\s*`),
+                      '',
+                    )
+                  : null;
+              return (
+                <Pressable
+                  key={`${h.latitude}-${h.longitude}-${i}`}
+                  onPress={() =>
+                    handleSelect({
+                      displayName: h.displayName || h.label,
+                      shortName: h.label,
+                      latitude: h.latitude,
+                      longitude: h.longitude,
+                    })
+                  }
+                  className="flex-row items-start gap-3 border-b border-border px-4 py-3 active:bg-muted"
+                >
+                  <View className="mt-1">
+                    <Clock size={18} color="#888" />
+                  </View>
+                  <View className="flex-1">
+                    <Text
+                      className="text-base text-foreground"
+                      numberOfLines={1}
+                    >
+                      {h.label}
+                    </Text>
+                    {detail ? (
+                      <Text
+                        className="text-xs text-muted-foreground"
+                        numberOfLines={1}
+                      >
+                        {detail}
+                      </Text>
+                    ) : null}
+                  </View>
+                </Pressable>
+              );
+            })}
           </View>
         ) : null}
 
@@ -226,22 +244,39 @@ export function SearchSheet({
             <Text className="text-sm text-muted-foreground">{hint}</Text>
           </View>
         ) : null}
-        {results.map((r, i) => (
-          <Pressable
-            key={`${r.latitude}-${r.longitude}-${i}`}
-            onPress={() => handleSelect(r)}
-            className="flex-row items-start gap-3 border-b border-border px-4 py-3 active:bg-muted"
-          >
-            <View className="mt-1">
-              <MapPin size={18} color="#2563eb" />
-            </View>
-            <View className="flex-1">
-              <Text className="text-base text-foreground" numberOfLines={1}>
-                {r.shortName}
-              </Text>
-            </View>
-          </Pressable>
-        ))}
+        {results.map((r, i) => {
+          const detail =
+            r.displayName && r.displayName !== r.shortName
+              ? r.displayName.replace(
+                  new RegExp(`^${r.shortName.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')},?\\s*`),
+                  '',
+                )
+              : null;
+          return (
+            <Pressable
+              key={`${r.latitude}-${r.longitude}-${i}`}
+              onPress={() => handleSelect(r)}
+              className="flex-row items-start gap-3 border-b border-border px-4 py-3 active:bg-muted"
+            >
+              <View className="mt-1">
+                <MapPin size={18} color="#2563eb" />
+              </View>
+              <View className="flex-1">
+                <Text className="text-base text-foreground" numberOfLines={1}>
+                  {r.shortName}
+                </Text>
+                {detail ? (
+                  <Text
+                    className="text-xs text-muted-foreground"
+                    numberOfLines={2}
+                  >
+                    {detail}
+                  </Text>
+                ) : null}
+              </View>
+            </Pressable>
+          );
+        })}
       </ScrollView>
     </View>
   );
