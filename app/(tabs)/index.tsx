@@ -10,6 +10,7 @@ import MapView, {
   type MapRegion,
 } from '@/components/MapView';
 import { DrawCanvas } from '@/components/DrawCanvas';
+import { MallSheet } from '@/components/MallSheet';
 import { NavigationBar } from '@/components/NavigationBar';
 import { RoutePlanner } from '@/components/RoutePlanner';
 import { SearchSheet } from '@/components/SearchSheet';
@@ -22,6 +23,7 @@ import {
   type GeocodeResult,
   type TransitOption,
 } from '@/lib/routing';
+import { MALLS, type Mall } from '@/lib/malls';
 import { useTripStore, type TransportMode } from '@/lib/stores/tripStore';
 
 const STOP_COLORS: ('green' | 'red' | 'orange' | 'purple' | 'cyan' | 'blue')[] = [
@@ -86,6 +88,8 @@ export default function Home() {
   /** Currently selected transit variant (when user taps a bus option). */
   const [selectedTransitOption, setSelectedTransitOption] =
     useState<TransitOption | null>(null);
+  /** Mall POI sheet — shown when the user taps a mall pin on the map. */
+  const [activeMall, setActiveMall] = useState<Mall | null>(null);
 
   const routeReqRef = useRef(0);
 
@@ -256,6 +260,9 @@ export default function Home() {
   const style = MODE_STYLE[mode];
 
   const polylines: MapPolyline[] = useMemo(() => {
+    // During an active partial-drawing session, hide every pre-existing route
+    // line — the user should see a clean canvas between the two target stops.
+    if (drawing) return [];
     if (legs.length === 0) {
       if (stops.length >= 2) {
         return [
@@ -283,10 +290,46 @@ export default function Home() {
         lineDashPattern: legStyle.dashed ? [8, 6] : undefined,
       };
     });
-  }, [legs, stops, style, mode]);
+  }, [legs, stops, style, mode, drawing]);
 
   const markers: MapMarker[] = useMemo(() => {
     const out: MapMarker[] = [];
+
+    // When the user is actively drawing a partial route between two specific
+    // stops, the map should be uncluttered: show ONLY the "from" and "to"
+    // stops for this drawing session, nothing else.
+    if (drawing && drawTargetStopId) {
+      const toIdx = stops.findIndex((s) => s.id === drawTargetStopId);
+      if (toIdx > 0) {
+        const fromStop = stops[toIdx - 1];
+        const toStop = stops[toIdx];
+        [fromStop, toStop].forEach((s, i) => {
+          if (s.latitude === 0 && s.longitude === 0) return;
+          if (i === 0 && s.originKind === 'myLocation') return;
+          out.push({
+            id: s.id,
+            coordinate: { latitude: s.latitude, longitude: s.longitude },
+            color: STOP_COLORS[(toIdx - 1 + i) % STOP_COLORS.length],
+          });
+        });
+      }
+      // Include user-location dot so user can see where they are while drawing
+      if (userLocation) {
+        const arrowHtml = `<div style="position:relative;width:40px;height:40px;pointer-events:none;display:flex;align-items:center;justify-content:center">
+  <div style="position:absolute;inset:0;border-radius:9999px;background:rgba(59,130,246,0.18)"></div>
+  <div style="position:absolute;width:18px;height:18px;border-radius:9999px;background:#3b82f6;border:3px solid #fff;box-shadow:0 1px 6px rgba(0,0,0,0.35)"></div>
+  ${heading != null ? `<div style="position:absolute;top:-2px;left:50%;width:0;height:0;border-left:8px solid transparent;border-right:8px solid transparent;border-bottom:14px solid #3b82f6;transform:translateX(-50%)"></div>` : ''}
+</div>`;
+        out.push({
+          id: 'user',
+          coordinate: userLocation,
+          badgeHtml: arrowHtml,
+          rotationDegrees: heading ?? 0,
+        });
+      }
+      return out;
+    }
+
     // Stop pins (exclude origin when it's myLocation stub)
     stops.forEach((s, idx) => {
       if (idx === 0 && s.originKind === 'myLocation') return;
@@ -353,8 +396,21 @@ export default function Home() {
         rotationDegrees: heading ?? 0,
       });
     }
+
+    // Mall POI pins — always visible. Tapping one opens the MallSheet.
+    // Only add when not navigating (to keep arrival UI clean).
+    if (!navigating) {
+      MALLS.forEach((m) => {
+        const mallBadge = `<div style="pointer-events:none;display:flex;align-items:center;justify-content:center;min-width:28px;height:28px;padding:0 8px;border-radius:14px;background:#111827;color:#fff;font-size:11px;font-weight:700;box-shadow:0 2px 6px rgba(0,0,0,0.35);border:2px solid #fff;white-space:nowrap">🛍 ${m.name.split(' ')[0]}</div>`;
+        out.push({
+          id: `mall-${m.id}`,
+          coordinate: { latitude: m.latitude, longitude: m.longitude },
+          badgeHtml: mallBadge,
+        });
+      });
+    }
     return out;
-  }, [stops, legs, userLocation, style, heading]);
+  }, [stops, legs, userLocation, style, heading, drawing, drawTargetStopId, navigating]);
 
   // ---------------------------------------------------------------------
   // Handlers
@@ -492,6 +548,9 @@ export default function Home() {
           durationSeconds: matched.durationSeconds,
           partial: true,
         });
+        // After a partial drawing, switch the trip mode to walking — per product
+        // spec this reflects the pedestrian intent of the freehand sketch.
+        useTripStore.getState().setMode('walking');
         setDrawTargetStopId(null);
         setDrawing(false);
         setPlannerCollapsed(false);
@@ -502,6 +561,9 @@ export default function Home() {
       const first = matched.coordinates[0];
       const last = matched.coordinates[matched.coordinates.length - 1];
       clearStops();
+      // After a full sketched route, default to walking mode — matches the
+      // pedestrian / exploratory nature of a drawn path.
+      useTripStore.getState().setMode('walking');
       setOriginToPlace({
         label: 'Начало маршрута',
         latitude: first.latitude,
@@ -621,6 +683,15 @@ export default function Home() {
     [selectedTransitOption, legs],
   );
 
+  const handleMarkerPress = useCallback((marker: MapMarker) => {
+    const id = marker.id ?? '';
+    if (id.startsWith('mall-')) {
+      const mallId = id.slice('mall-'.length);
+      const mall = MALLS.find((m) => m.id === mallId);
+      if (mall) setActiveMall(mall);
+    }
+  }, []);
+
   const handleUserLocationUpdate = useCallback(
     (coord: { latitude: number; longitude: number }) => {
       setUserLocation(coord);
@@ -654,6 +725,7 @@ export default function Home() {
         onRegionChangeComplete={setRegion}
         markers={markers}
         polylines={polylines}
+        onMarkerPress={handleMarkerPress}
         showsUserLocation
         mapType="standard"
       />
@@ -699,8 +771,14 @@ export default function Home() {
         <View
           className="absolute right-4"
           style={{
-            bottom:
-              plannerVisible && !plannerCollapsed
+            // When a transit option is selected (detail sheet open), the
+            // locate button jumps to the very top-right of the screen so
+            // it never overlaps the half-screen sheet and the brush button
+            // is hidden entirely.
+            top: selectedTransitOption ? 60 : undefined,
+            bottom: selectedTransitOption
+              ? undefined
+              : plannerVisible && !plannerCollapsed
                 ? 360
                 : plannerVisible && plannerCollapsed
                   ? 120
@@ -708,7 +786,7 @@ export default function Home() {
           }}
           pointerEvents="box-none"
         >
-          {showBrush ? (
+          {showBrush && !selectedTransitOption ? (
             <Pressable
               onPress={() => setDrawing(true)}
               className="mb-3 h-12 w-12 items-center justify-center rounded-full bg-card"
@@ -804,6 +882,9 @@ export default function Home() {
           </SafeAreaView>
         </View>
       ) : null}
+
+      {/* Mall POI sheet */}
+      <MallSheet mall={activeMall} onClose={() => setActiveMall(null)} />
     </View>
   );
 }

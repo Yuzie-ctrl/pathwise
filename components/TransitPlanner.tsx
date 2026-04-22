@@ -46,9 +46,12 @@ import {
 const MODE_CONFIG: Record<TransportMode, { icon: typeof Car; label: string }> = {
   driving: { icon: Car, label: 'Авто' },
   walking: { icon: Footprints, label: 'Пешком' },
-  cycling: { icon: Bike, label: 'Вело' },
   transit: { icon: Bus, label: 'Автобус' },
+  cycling: { icon: Bike, label: 'Вело' },
 };
+
+// Авто, Пешком, Автобус, Вело — explicit order per product brief.
+const MODE_ORDER: TransportMode[] = ['driving', 'walking', 'transit', 'cycling'];
 
 const STOP_COLORS = ['#22c55e', '#ef4444', '#f59e0b', '#8b5cf6', '#06b6d4', '#ec4899'];
 
@@ -93,6 +96,9 @@ export function TransitPlanner({
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [filterOpen, setFilterOpen] = useState(false);
   const [selectedLines, setSelectedLines] = useState<string[]>([]);
+  const [selectedKinds, setSelectedKinds] = useState<
+    ('bus' | 'tram' | 'trolley' | 'train')[]
+  >([]);
   const [detailOption, setDetailOption] = useState<TransitOption | null>(null);
   /** Detail sheet vertical position. */
   const [detailPos, setDetailPos] = useState<'compact' | 'expanded' | 'collapsed'>(
@@ -110,22 +116,51 @@ export function TransitPlanner({
       : stops[0]?.label || 'Начало';
   const destLabel = stops[stops.length - 1]?.label || 'Конец';
 
+  const viaStops = useMemo(
+    () =>
+      stops.slice(1, -1).map((s) => ({
+        label: s.label,
+        dwellMinutes: s.dwellMinutes,
+      })),
+    [stops],
+  );
+
   const allOptions = useMemo(
     () =>
       travelSeconds > 0
-        ? buildTransitOptions(travelSeconds, distanceMeters, originLabel, destLabel)
+        ? buildTransitOptions(
+            travelSeconds,
+            distanceMeters,
+            originLabel,
+            destLabel,
+            viaStops,
+          )
         : [],
-    [travelSeconds, distanceMeters, originLabel, destLabel],
+    [travelSeconds, distanceMeters, originLabel, destLabel, viaStops],
   );
 
   const availableLines = useMemo(() => allTransitLines(allOptions), [allOptions]);
 
   const filteredOptions = useMemo(() => {
-    if (selectedLines.length === 0) return allOptions;
-    return allOptions.filter((o) =>
-      o.busLines.some((ln) => selectedLines.includes(ln)),
+    let list = allOptions;
+    if (selectedLines.length > 0) {
+      list = list.filter((o) =>
+        o.busLines.some((ln) => selectedLines.includes(ln)),
+      );
+    }
+    if (selectedKinds.length > 0) {
+      list = list.filter((o) =>
+        o.vehicleKinds.some((k) => selectedKinds.includes(k)),
+      );
+    }
+    return list;
+  }, [allOptions, selectedLines, selectedKinds]);
+
+  const toggleKind = (k: 'bus' | 'tram' | 'trolley' | 'train') => {
+    setSelectedKinds((prev) =>
+      prev.includes(k) ? prev.filter((x) => x !== k) : [...prev, k],
     );
-  }, [allOptions, selectedLines]);
+  };
 
   const toggleLine = (line: string) => {
     setSelectedLines((prev) =>
@@ -190,7 +225,7 @@ export function TransitPlanner({
             <X size={18} color="#333" />
           </Pressable>
           <View className="flex-1 flex-row gap-1.5">
-            {(Object.keys(MODE_CONFIG) as TransportMode[]).map((m) => {
+            {MODE_ORDER.map((m) => {
               const cfg = MODE_CONFIG[m];
               const Icon = cfg.icon;
               const active = mode === m;
@@ -239,19 +274,21 @@ export function TransitPlanner({
             onPress={() => setFilterOpen((v) => !v)}
             hitSlop={6}
             className={`h-10 w-10 items-center justify-center rounded-xl border ${
-              selectedLines.length > 0
+              selectedLines.length + selectedKinds.length > 0
                 ? 'border-primary bg-primary/10'
                 : 'border-border bg-card'
             }`}
           >
             <Filter
               size={16}
-              color={selectedLines.length > 0 ? '#2563eb' : '#666'}
+              color={
+                selectedLines.length + selectedKinds.length > 0 ? '#2563eb' : '#666'
+              }
             />
-            {selectedLines.length > 0 ? (
+            {selectedLines.length + selectedKinds.length > 0 ? (
               <View className="absolute -right-1 -top-1 h-4 w-4 items-center justify-center rounded-full bg-primary">
                 <Text className="text-[9px] font-bold text-primary-foreground">
-                  {selectedLines.length}
+                  {selectedLines.length + selectedKinds.length}
                 </Text>
               </View>
             ) : null}
@@ -261,6 +298,38 @@ export function TransitPlanner({
         {/* Filter chips panel */}
         {filterOpen ? (
           <View className="mx-4 mt-2 rounded-xl border border-border bg-card p-3">
+            <Text className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Вид транспорта
+            </Text>
+            <View className="mb-3 flex-row flex-wrap gap-2">
+              {(
+                [
+                  { k: 'bus' as const, label: 'Автобус' },
+                  { k: 'tram' as const, label: 'Трамвай' },
+                  { k: 'trolley' as const, label: 'Троллейбус' },
+                  { k: 'train' as const, label: 'Поезд' },
+                ]
+              ).map((opt) => {
+                const active = selectedKinds.includes(opt.k);
+                return (
+                  <Pressable
+                    key={opt.k}
+                    onPress={() => toggleKind(opt.k)}
+                    className={`rounded-full border px-3 py-1 ${
+                      active ? 'border-primary bg-primary' : 'border-border bg-muted'
+                    }`}
+                  >
+                    <Text
+                      className={`text-xs font-semibold ${
+                        active ? 'text-primary-foreground' : 'text-foreground'
+                      }`}
+                    >
+                      {opt.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
             <Text className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
               Обязательно включить
             </Text>
@@ -758,14 +827,25 @@ function Timeline({
     }
 
     if (seg.kind === 'walk') {
-      rows.push(
-        <WalkRow
-          key={`walk-${i}`}
-          durationSec={seg.durationSeconds}
-          distanceM={seg.distanceMeters}
-          onPress={() => onZoomToSegment(i)}
-        />,
-      );
+      if (seg.isDwell) {
+        rows.push(
+          <DwellRow
+            key={`dwell-${i}`}
+            minutes={Math.max(1, Math.round(seg.durationSeconds / 60))}
+            location={seg.to}
+            time={time(elapsed + seg.durationSeconds)}
+          />,
+        );
+      } else {
+        rows.push(
+          <WalkRow
+            key={`walk-${i}`}
+            durationSec={seg.durationSeconds}
+            distanceM={seg.distanceMeters}
+            onPress={() => onZoomToSegment(i)}
+          />,
+        );
+      }
     } else {
       // Detect consecutive bus segments at a shared transfer stop.
       const isTransferNext =
@@ -1061,6 +1141,46 @@ function TransferRow({
             Пересадка на той же остановке
           </Text>
         </View>
+      </View>
+    </View>
+  );
+}
+
+function DwellRow({
+  minutes,
+  location,
+  time,
+}: {
+  minutes: number;
+  location: string;
+  time: string;
+}) {
+  return (
+    <View className="flex-row items-start">
+      <View style={{ width: 28, alignItems: 'center', paddingVertical: 4 }}>
+        <View
+          style={{
+            width: 22,
+            height: 22,
+            borderRadius: 11,
+            backgroundColor: '#fef3c7',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <Pause size={11} color="#b45309" />
+        </View>
+      </View>
+      <View className="flex-1 flex-row items-center justify-between pb-3">
+        <View className="flex-1">
+          <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
+            Пауза · {minutes} мин
+          </Text>
+          <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+            {location}
+          </Text>
+        </View>
+        <Text className="ml-2 text-sm font-semibold text-foreground">{time}</Text>
       </View>
     </View>
   );

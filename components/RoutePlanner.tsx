@@ -43,9 +43,12 @@ const MODE_CONFIG: Record<
 > = {
   driving: { icon: Car, label: 'Авто' },
   walking: { icon: Footprints, label: 'Пешком' },
-  cycling: { icon: Bike, label: 'Вело' },
   transit: { icon: Bus, label: 'Автобус' },
+  cycling: { icon: Bike, label: 'Вело' },
 };
+
+// Explicit order: Авто, Пешком, Автобус, Вело
+const MODE_ORDER: TransportMode[] = ['driving', 'walking', 'transit', 'cycling'];
 
 const STOP_COLORS = ['#22c55e', '#ef4444', '#f59e0b', '#8b5cf6', '#06b6d4', '#ec4899'];
 
@@ -208,7 +211,7 @@ export function RoutePlanner({
 
           {/* Transport mode toggle */}
           <View className="flex-row gap-2 px-4 pb-2">
-            {(Object.keys(MODE_CONFIG) as TransportMode[]).map((m) => {
+            {MODE_ORDER.map((m) => {
               const cfg = MODE_CONFIG[m];
               const Icon = cfg.icon;
               const active = mode === m;

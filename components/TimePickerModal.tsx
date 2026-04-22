@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from 'react';
 import {
   FlatList,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   View,
@@ -50,6 +51,7 @@ function WheelColumn({
   const listRef = useRef<FlatList<number>>(null);
   const lastReportedRef = useRef<number>(selected);
   const userScrollingRef = useRef(false);
+  const commitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Keep the wheel in sync when the outside `selected` prop changes
   // (e.g. user tapped +5 min button). Skip if the user is mid-scroll
@@ -60,7 +62,6 @@ function WheelColumn({
     if (idx < 0) return;
     if (lastReportedRef.current === selected) return;
     lastReportedRef.current = selected;
-    // Defer to the next frame so FlatList is mounted.
     requestAnimationFrame(() => {
       try {
         listRef.current?.scrollToOffset({
@@ -75,14 +76,8 @@ function WheelColumn({
 
   const initialIndex = Math.max(0, values.indexOf(selected));
 
-  const onScrollBegin = () => {
-    userScrollingRef.current = true;
-  };
-
-  const handleScrollEnd = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
-    userScrollingRef.current = false;
-    const offset = e.nativeEvent.contentOffset.y;
-    const idx = Math.round(offset / ITEM_HEIGHT);
+  const commitFromOffset = (offsetY: number) => {
+    const idx = Math.round(offsetY / ITEM_HEIGHT);
     const clamped = Math.max(0, Math.min(values.length - 1, idx));
     const v = values[clamped];
     if (v !== lastReportedRef.current) {
@@ -90,6 +85,37 @@ function WheelColumn({
       onSelect(v);
     }
   };
+
+  const onScrollBegin = () => {
+    userScrollingRef.current = true;
+    if (commitTimerRef.current) {
+      clearTimeout(commitTimerRef.current);
+      commitTimerRef.current = null;
+    }
+  };
+
+  const handleScrollEnd = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    userScrollingRef.current = false;
+    commitFromOffset(e.nativeEvent.contentOffset.y);
+  };
+
+  // Web (and sometimes native) does NOT emit `onMomentumScrollEnd` reliably
+  // for FlatList. We therefore also run a debounced commit from `onScroll`
+  // so a mouse-wheel / trackpad scroll on web still picks up the new value.
+  const handleScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const offset = e.nativeEvent.contentOffset.y;
+    if (commitTimerRef.current) clearTimeout(commitTimerRef.current);
+    commitTimerRef.current = setTimeout(() => {
+      userScrollingRef.current = false;
+      commitFromOffset(offset);
+    }, 140);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (commitTimerRef.current) clearTimeout(commitTimerRef.current);
+    };
+  }, []);
 
   return (
     <View
@@ -118,6 +144,7 @@ function WheelColumn({
         snapToInterval={ITEM_HEIGHT}
         snapToAlignment="start"
         decelerationRate="fast"
+        scrollEventThrottle={16}
         getItemLayout={(_, index) => ({
           length: ITEM_HEIGHT,
           offset: ITEM_HEIGHT * index,
@@ -125,13 +152,29 @@ function WheelColumn({
         })}
         initialScrollIndex={initialIndex}
         onScrollBeginDrag={onScrollBegin}
+        onMomentumScrollBegin={onScrollBegin}
         onMomentumScrollEnd={handleScrollEnd}
         onScrollEndDrag={handleScrollEnd}
+        onScroll={Platform.OS === 'web' ? handleScroll : undefined}
         contentContainerStyle={{ paddingVertical: ITEM_HEIGHT * 2 }}
+        // On web, allow wheel events via the default overflow scroll
         renderItem={({ item }) => {
           const active = item === selected;
           return (
-            <View
+            <Pressable
+              onPress={() => {
+                const idx = values.indexOf(item);
+                if (idx >= 0) {
+                  listRef.current?.scrollToOffset({
+                    offset: idx * ITEM_HEIGHT,
+                    animated: true,
+                  });
+                  if (item !== lastReportedRef.current) {
+                    lastReportedRef.current = item;
+                    onSelect(item);
+                  }
+                }
+              }}
               style={{
                 height: ITEM_HEIGHT,
                 alignItems: 'center',
@@ -147,7 +190,7 @@ function WheelColumn({
               >
                 {item.toString().padStart(pad, '0')}
               </Text>
-            </View>
+            </Pressable>
           );
         }}
       />

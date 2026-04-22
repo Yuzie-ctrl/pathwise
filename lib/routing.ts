@@ -736,9 +736,17 @@ export interface TransitSegment {
   durationSeconds: number;
   distanceMeters: number;
   line?: string; // "24A", etc.
+  /** Preferred vehicle sub-type for filtering/display. */
+  vehicleKind?: 'bus' | 'tram' | 'trolley' | 'train';
   from: string;
   to: string;
   stopsCount?: number;
+  /** When true, this segment corresponds to a configured dwell (pause) at a stop. */
+  isDwell?: boolean;
+  /** Optional details emitted by Google-Maps-like timelines. */
+  headsign?: string;
+  /** Intermediate stop names along the ride (for future timeline expansion). */
+  intermediateStops?: string[];
 }
 
 export interface TransitOption {
@@ -749,9 +757,16 @@ export interface TransitOption {
   walkMinutes: number;
   transfers: number;
   busLines: string[];
+  /** Vehicle kinds present in this option (for the kind filter row). */
+  vehicleKinds: ('bus' | 'tram' | 'trolley' | 'train')[];
   departureInMinutes: number;
   /** Detailed breakdown for Google-Maps-style detail sheet. */
   segments: TransitSegment[];
+}
+
+export interface TransitPlanStop {
+  label: string;
+  dwellMinutes: number;
 }
 
 export function buildTransitOptions(
@@ -759,152 +774,159 @@ export function buildTransitOptions(
   distanceMeters: number,
   originLabel = 'Начало',
   destinationLabel = 'Конец',
+  /** Optional via-stops between origin and destination so dwell pauses appear in the detail timeline. */
+  viaStops: TransitPlanStop[] = [],
 ): TransitOption[] {
   if (carDurationSeconds <= 0) return [];
   const base = Math.round(carDurationSeconds * 1.4);
   const km = distanceMeters / 1000;
   const line = (n: number) => `№${Math.max(1, Math.round(km * 3) + n)}`;
 
-  // Direct
-  const directWalk1 = Math.max(60, Math.round(km * 0.6 * 60));
-  const directBus = Math.max(0, base - directWalk1 * 2);
-  const directWalk2 = directWalk1;
-  const direct: TransitOption = {
-    id: 'transit-direct',
-    label: 'Прямой автобус',
-    description: 'Без пересадок',
-    durationSeconds: base,
-    walkMinutes: Math.max(3, Math.round(km * 0.6)),
-    transfers: 0,
-    busLines: [line(0)],
-    departureInMinutes: 4,
-    segments: [
-      {
-        kind: 'walk',
-        durationSeconds: directWalk1,
-        distanceMeters: distanceMeters * 0.1,
-        from: originLabel,
-        to: 'Остановка',
-      },
-      {
-        kind: 'bus',
-        durationSeconds: directBus,
-        distanceMeters: distanceMeters * 0.8,
-        line: line(0),
-        from: 'Остановка',
-        to: 'Остановка',
-        stopsCount: Math.max(3, Math.round(km * 1.2)),
-      },
-      {
-        kind: 'walk',
-        durationSeconds: directWalk2,
-        distanceMeters: distanceMeters * 0.1,
-        from: 'Остановка',
-        to: destinationLabel,
-      },
-    ],
+  // If the user specified via-stops, we want the detail timeline to include
+  // a walk→bus→…→walk sequence that "visits" each via-stop (+ its dwell pause).
+  // Distribute total duration and distance proportionally across each hop.
+  const allStops = [
+    { label: originLabel, dwellMinutes: 0 },
+    ...viaStops,
+    { label: destinationLabel, dwellMinutes: 0 },
+  ];
+  const hopCount = allStops.length - 1;
+
+  // Helper — build variant with a specific transfer count and vehicle-kind mix.
+  type Variant = {
+    id: string;
+    label: string;
+    description: string;
+    durMul: number;
+    walkFrac: number;
+    lines: string[];
+    kinds: ('bus' | 'tram' | 'trolley' | 'train')[];
+    departIn: number;
   };
 
-  // With transfer — faster
-  const fastDur = Math.round(base * 0.9);
-  const fastWalk = Math.max(60, Math.round(km * 0.8 * 60));
-  const fastBus1 = Math.round((fastDur - fastWalk * 2) * 0.55);
-  const fastBus2 = Math.max(0, fastDur - fastWalk * 2 - fastBus1);
-  const fast: TransitOption = {
-    id: 'transit-fast',
-    label: 'С пересадкой',
-    description: 'Быстрее на ~10%',
-    durationSeconds: fastDur,
-    walkMinutes: Math.max(4, Math.round(km * 0.8)),
-    transfers: 1,
-    busLines: [line(2), line(5)],
-    departureInMinutes: 7,
-    segments: [
-      {
-        kind: 'walk',
-        durationSeconds: fastWalk,
-        distanceMeters: distanceMeters * 0.08,
-        from: originLabel,
-        to: 'Остановка',
-      },
-      {
-        kind: 'bus',
-        durationSeconds: fastBus1,
-        distanceMeters: distanceMeters * 0.45,
-        line: line(2),
-        from: 'Остановка',
-        to: 'Пересадка',
-        stopsCount: Math.max(2, Math.round(km * 0.8)),
-      },
-      {
-        kind: 'bus',
-        durationSeconds: fastBus2,
-        distanceMeters: distanceMeters * 0.37,
-        line: line(5),
-        from: 'Пересадка',
-        to: 'Остановка',
-        stopsCount: Math.max(2, Math.round(km * 0.6)),
-      },
-      {
-        kind: 'walk',
-        durationSeconds: fastWalk,
-        distanceMeters: distanceMeters * 0.1,
-        from: 'Остановка',
-        to: destinationLabel,
-      },
-    ],
-  };
+  const variants: Variant[] = [
+    {
+      id: 'transit-direct',
+      label: 'Прямой маршрут',
+      description: 'Без пересадок',
+      durMul: 1.0,
+      walkFrac: 0.12,
+      lines: [line(0)],
+      kinds: ['bus'],
+      departIn: 4,
+    },
+    {
+      id: 'transit-fast',
+      label: 'С пересадкой',
+      description: 'Быстрее на ~10%',
+      durMul: 0.9,
+      walkFrac: 0.1,
+      lines: [line(2), line(5)],
+      kinds: ['bus', 'tram'],
+      departIn: 7,
+    },
+    {
+      id: 'transit-slow',
+      label: 'Меньше ходьбы',
+      description: 'Дольше, но почти без ходьбы',
+      durMul: 1.12,
+      walkFrac: 0.04,
+      lines: [line(1), line(4)],
+      kinds: ['trolley', 'bus'],
+      departIn: 12,
+    },
+  ];
 
-  const slowDur = Math.round(base * 1.12);
-  const slowWalk = 120;
-  const slowBus1 = Math.round((slowDur - slowWalk * 2) * 0.5);
-  const slowBus2 = Math.max(0, slowDur - slowWalk * 2 - slowBus1);
-  const slow: TransitOption = {
-    id: 'transit-slow',
-    label: 'Меньше ходьбы',
-    description: 'Дольше, но почти без ходьбы',
-    durationSeconds: slowDur,
-    walkMinutes: 2,
-    transfers: 1,
-    busLines: [line(1), line(4)],
-    departureInMinutes: 12,
-    segments: [
-      {
-        kind: 'walk',
-        durationSeconds: slowWalk,
-        distanceMeters: distanceMeters * 0.03,
-        from: originLabel,
-        to: 'Остановка',
-      },
-      {
-        kind: 'bus',
-        durationSeconds: slowBus1,
-        distanceMeters: distanceMeters * 0.55,
-        line: line(1),
-        from: 'Остановка',
-        to: 'Пересадка',
-        stopsCount: Math.max(3, Math.round(km * 1)),
-      },
-      {
-        kind: 'bus',
-        durationSeconds: slowBus2,
-        distanceMeters: distanceMeters * 0.38,
-        line: line(4),
-        from: 'Пересадка',
-        to: 'Остановка',
-        stopsCount: Math.max(2, Math.round(km * 0.7)),
-      },
-      {
-        kind: 'walk',
-        durationSeconds: slowWalk,
-        distanceMeters: distanceMeters * 0.04,
-        from: 'Остановка',
-        to: destinationLabel,
-      },
-    ],
-  };
+  return variants.map((v) => {
+    const totalDur = Math.round(base * v.durMul);
+    const walkFracPerSide = v.walkFrac;
+    const segments: TransitSegment[] = [];
+    let walkMinutesSum = 0;
 
-  return [direct, fast, slow];
+    // Distribute across hops — each hop becomes walk→bus→walk (shortened walks
+    // when in the middle of the route).
+    const hopDist = distanceMeters / Math.max(1, hopCount);
+    const hopDur = totalDur / Math.max(1, hopCount);
+
+    for (let h = 0; h < hopCount; h++) {
+      const fromLabel = allStops[h].label;
+      const toLabel = allStops[h + 1].label;
+      const isFirstHop = h === 0;
+      const isLastHop = h === hopCount - 1;
+
+      // Walk-to-stop (only prepended on the very first hop OR when the previous
+      // hop ended with bus arrival to a different area)
+      if (isFirstHop) {
+        const walkDist = hopDist * walkFracPerSide;
+        const walkSec = Math.round(walkDist / AVG_SPEED_MPS.walking);
+        walkMinutesSum += walkSec / 60;
+        segments.push({
+          kind: 'walk',
+          durationSeconds: walkSec,
+          distanceMeters: walkDist,
+          from: fromLabel,
+          to: 'Остановка',
+        });
+      }
+
+      // Bus segment: pick one of the configured lines (alternate for multi-line variants)
+      const lineForHop = v.lines[h % v.lines.length];
+      const kindForHop = v.kinds[h % v.kinds.length] ?? 'bus';
+      const busDist = hopDist * (1 - walkFracPerSide * (isFirstHop ? 2 : 1));
+      const busSec = Math.max(60, Math.round(hopDur - (isFirstHop ? 2 : 1) * (walkFracPerSide * hopDist) / AVG_SPEED_MPS.walking));
+      segments.push({
+        kind: kindForHop === 'tram' ? 'tram' : kindForHop === 'train' ? 'train' : 'bus',
+        durationSeconds: busSec,
+        distanceMeters: busDist,
+        line: lineForHop,
+        vehicleKind: kindForHop,
+        from: 'Остановка',
+        to: isLastHop ? 'Остановка' : `Пересадка · ${toLabel}`,
+        stopsCount: Math.max(2, Math.round((busDist / 1000) * 1.2)),
+      });
+
+      // Dwell at this stop (non-final stops)
+      const dwellAtTo = allStops[h + 1].dwellMinutes ?? 0;
+      if (!isLastHop && dwellAtTo > 0) {
+        segments.push({
+          kind: 'walk',
+          durationSeconds: dwellAtTo * 60,
+          distanceMeters: 0,
+          from: toLabel,
+          to: toLabel,
+          isDwell: true,
+        });
+      }
+
+      if (isLastHop) {
+        const walkDist = hopDist * walkFracPerSide;
+        const walkSec = Math.round(walkDist / AVG_SPEED_MPS.walking);
+        walkMinutesSum += walkSec / 60;
+        segments.push({
+          kind: 'walk',
+          durationSeconds: walkSec,
+          distanceMeters: walkDist,
+          from: 'Остановка',
+          to: toLabel,
+        });
+      }
+    }
+
+    const realDur = segments.reduce((acc, s) => acc + (s.isDwell ? 0 : s.durationSeconds), 0);
+
+    return {
+      id: v.id,
+      label: v.label,
+      description: v.description,
+      durationSeconds: realDur,
+      walkMinutes: Math.max(1, Math.round(walkMinutesSum)),
+      transfers: Math.max(0, v.lines.length - 1),
+      busLines: v.lines,
+      vehicleKinds: v.kinds,
+      departureInMinutes: v.departIn,
+      segments,
+    };
+  });
 }
 
 /**
