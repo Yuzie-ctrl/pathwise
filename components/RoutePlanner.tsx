@@ -4,16 +4,15 @@ import {
   ArrowDown,
   ArrowUp,
   Bike,
+  Brush,
   Bus,
   Car,
   Clock,
   Footprints,
-  MapPin,
   Navigation2,
   Pause,
   Plus,
   Trash2,
-  Users,
   X,
 } from 'lucide-react-native';
 
@@ -21,7 +20,6 @@ import { DwellPicker } from '@/components/DwellPicker';
 import { SearchSheet } from '@/components/SearchSheet';
 import { Text } from '@/components/ui/text';
 import {
-  buildTransitOptions,
   formatDistance,
   formatDuration,
   formatETA,
@@ -54,6 +52,8 @@ interface RoutePlannerProps {
   onStartTrip: () => void;
   onChangeOrigin: () => void;
   onAddStop?: () => void;
+  /** Open drawing overlay to sketch a partial route to a given stop. */
+  onDrawForStop?: (stopId: string) => void;
 }
 
 export function RoutePlanner({
@@ -63,6 +63,7 @@ export function RoutePlanner({
   onStartTrip,
   onChangeOrigin,
   onAddStop,
+  onDrawForStop,
 }: RoutePlannerProps) {
   const stops = useTripStore((s) => s.stops);
   const mode = useTripStore((s) => s.mode);
@@ -74,6 +75,7 @@ export function RoutePlanner({
   const moveStop = useTripStore((s) => s.moveStop);
   const clearStops = useTripStore((s) => s.clearStops);
   const setMode = useTripStore((s) => s.setMode);
+  const drawnRoutes = useTripStore((s) => s.drawnRoutes);
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [dwellPickerStopId, setDwellPickerStopId] = useState<string | null>(null);
@@ -99,14 +101,6 @@ export function RoutePlanner({
       eta: formatETA(totalSeconds),
     };
   }, [canShowSummary, totalSeconds, travelSeconds, dwellMinutes, distanceMeters]);
-
-  const transitOptions = useMemo(
-    () =>
-      canShowSummary && mode === 'transit'
-        ? buildTransitOptions(travelSeconds, distanceMeters)
-        : [],
-    [canShowSummary, mode, travelSeconds, distanceMeters],
-  );
 
   const handleSelectPlace = (result: GeocodeResult) => {
     addStop({
@@ -269,70 +263,6 @@ export function RoutePlanner({
             </View>
           ) : null}
 
-          {/* Bus route variants (transit mode) */}
-          {mode === 'transit' && transitOptions.length > 0 ? (
-            <View className="mx-4 mb-3">
-              <Text className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                Варианты на автобусе
-              </Text>
-              <View className="gap-2">
-                {transitOptions.map((opt) => (
-                  <View
-                    key={opt.id}
-                    className="flex-row items-center gap-3 rounded-2xl border border-border bg-background px-3 py-2.5"
-                  >
-                    <View className="h-9 w-9 items-center justify-center rounded-full bg-primary/10">
-                      <Bus size={18} color="#8b5cf6" />
-                    </View>
-                    <View className="flex-1">
-                      <View className="flex-row items-center gap-2">
-                        {opt.busLines.map((ln) => (
-                          <View
-                            key={ln}
-                            className="rounded-md bg-primary/10 px-1.5 py-0.5"
-                          >
-                            <Text className="text-[11px] font-semibold text-primary">
-                              {ln}
-                            </Text>
-                          </View>
-                        ))}
-                        <Text
-                          className="flex-1 text-sm font-medium text-foreground"
-                          numberOfLines={1}
-                        >
-                          {opt.label}
-                        </Text>
-                      </View>
-                      <Text
-                        className="text-[11px] text-muted-foreground"
-                        numberOfLines={1}
-                      >
-                        {opt.description} · пешком {opt.walkMinutes} мин
-                        {opt.transfers > 0
-                          ? ` · ${opt.transfers} ${pluralize(opt.transfers, ['пересадка', 'пересадки', 'пересадок'])}`
-                          : ''}
-                      </Text>
-                    </View>
-                    <View className="items-end">
-                      <Text className="text-sm font-semibold text-foreground">
-                        {formatDuration(opt.durationSeconds)}
-                      </Text>
-                      <View className="mt-0.5 flex-row items-center gap-1">
-                        <Users size={10} color="#888" />
-                        <Text className="text-[10px] text-muted-foreground">
-                          через {opt.departureInMinutes} мин
-                        </Text>
-                      </View>
-                    </View>
-                  </View>
-                ))}
-              </View>
-              <Text className="mt-2 text-[10px] text-muted-foreground">
-                Онлайн-отслеживание автобусов недоступно в этом регионе — данные приблизительные.
-              </Text>
-            </View>
-          ) : null}
-
           {/* Stops list */}
           <ScrollView
             style={{ maxHeight: 320 }}
@@ -344,10 +274,13 @@ export function RoutePlanner({
               const isFirst = idx === 0;
               const isLast = idx === stops.length - 1;
               const isOrigin = isFirst;
+              const stopText = stop.displayName || stop.label;
+              const hasDrawnToThis = drawnRoutes.some(
+                (r) => r.toStopId === stop.id,
+              );
               return (
                 <View key={stop.id} className="px-4">
                   <View className="flex-row items-center gap-3 py-2">
-                    {/* Index chip */}
                     <View
                       className="h-7 w-7 items-center justify-center rounded-full"
                       style={{ backgroundColor: color }}
@@ -355,68 +288,66 @@ export function RoutePlanner({
                       <Text className="text-xs font-bold text-white">{idx + 1}</Text>
                     </View>
 
-                    {/* Label */}
                     {isOrigin ? (
                       <Pressable
                         onPress={onChangeOrigin}
                         className="flex-1 flex-row items-center gap-2 rounded-lg bg-muted/50 px-2 py-1.5 active:bg-muted"
                       >
-                        {stop.originKind === 'myLocation' ? (
-                          <MapPin size={14} color="#2563eb" />
-                        ) : null}
                         <View className="flex-1">
                           <Text
-                            className="text-sm font-medium text-foreground"
+                            className="text-sm text-foreground"
                             numberOfLines={1}
                           >
-                            {stop.label}
+                            <Text className="text-sm text-muted-foreground">
+                              Точка 1.{' '}
+                            </Text>
+                            {stop.originKind === 'myLocation'
+                              ? 'Моё местоположение'
+                              : stopText}
                           </Text>
-                          {stop.originKind === 'myLocation' ? (
-                            <Text className="text-[11px] text-muted-foreground">
-                              нажмите, чтобы выбрать другую точку
-                            </Text>
-                          ) : stop.displayName && stop.displayName !== stop.label ? (
-                            <Text
-                              className="text-[11px] text-muted-foreground"
-                              numberOfLines={1}
-                            >
-                              {stop.displayName}
-                            </Text>
-                          ) : (
-                            <Text className="text-[11px] text-muted-foreground">
-                              точка отправления
-                            </Text>
-                          )}
                         </View>
                       </Pressable>
                     ) : (
-                      <View className="flex-1">
-                        <Text
-                          className="text-sm font-medium text-foreground"
-                          numberOfLines={1}
-                        >
-                          {stop.label}
-                        </Text>
-                        {stop.displayName && stop.displayName !== stop.label ? (
+                      <View className="flex-1 flex-row items-center gap-2">
+                        <View className="flex-1">
                           <Text
-                            className="text-[11px] text-muted-foreground"
+                            className="text-sm text-foreground"
                             numberOfLines={1}
                           >
-                            {stop.displayName}
-                          </Text>
-                        ) : null}
-                        {!isLast && stop.dwellMinutes > 0 ? (
-                          <View className="mt-1 flex-row items-center gap-1 self-start rounded-full bg-amber-100 px-2 py-0.5 dark:bg-amber-500/20">
-                            <Pause size={10} color="#b45309" />
-                            <Text className="text-[11px] font-medium text-amber-800 dark:text-amber-300">
-                              пауза {stop.dwellMinutes} мин
+                            <Text className="text-sm text-muted-foreground">
+                              Точка {idx + 1}.{' '}
                             </Text>
-                          </View>
-                        ) : null}
+                            {stopText}
+                          </Text>
+                          {!isLast && stop.dwellMinutes > 0 ? (
+                            <View className="mt-1 flex-row items-center gap-1 self-start rounded-full bg-amber-100 px-2 py-0.5 dark:bg-amber-500/20">
+                              <Pause size={10} color="#b45309" />
+                              <Text className="text-[11px] font-medium text-amber-800 dark:text-amber-300">
+                                пауза {stop.dwellMinutes} мин
+                              </Text>
+                            </View>
+                          ) : null}
+                        </View>
                       </View>
                     )}
 
-                    {/* Dwell button — hidden for origin (idx 0) and last */}
+                    {/* Draw-route-to-this-stop button */}
+                    {!isOrigin && onDrawForStop ? (
+                      <Pressable
+                        onPress={() => onDrawForStop(stop.id)}
+                        hitSlop={6}
+                        className={`items-center justify-center rounded-full p-2 ${
+                          hasDrawnToThis ? 'bg-primary/10' : 'bg-muted'
+                        }`}
+                      >
+                        <Brush
+                          size={14}
+                          color={hasDrawnToThis ? '#2563eb' : '#666'}
+                        />
+                      </Pressable>
+                    ) : null}
+
+                    {/* Dwell */}
                     {!isOrigin && !isLast ? (
                       <Pressable
                         onPress={() => setDwellPickerStopId(stop.id)}
@@ -439,14 +370,14 @@ export function RoutePlanner({
                       </Pressable>
                     ) : null}
 
-                    {/* Reorder — not for origin */}
-                    {!isOrigin ? (
+                    {/* Reorder — only for middle stops (not origin, not last destination unless others exist) */}
+                    {!isOrigin && stops.length > 2 ? (
                       <View className="flex-row">
                         <Pressable
                           onPress={() => moveStop(stop.id, -1)}
                           hitSlop={6}
                           disabled={idx <= 1}
-                          className="p-1.5"
+                          className="p-1"
                         >
                           <ArrowUp size={14} color={idx <= 1 ? '#ccc' : '#666'} />
                         </Pressable>
@@ -454,14 +385,13 @@ export function RoutePlanner({
                           onPress={() => moveStop(stop.id, 1)}
                           hitSlop={6}
                           disabled={isLast}
-                          className="p-1.5"
+                          className="p-1"
                         >
                           <ArrowDown size={14} color={isLast ? '#ccc' : '#666'} />
                         </Pressable>
                       </View>
                     ) : null}
 
-                    {/* Remove — not for origin */}
                     {!isOrigin ? (
                       <Pressable
                         onPress={() => removeStop(stop.id)}

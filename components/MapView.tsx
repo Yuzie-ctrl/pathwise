@@ -248,6 +248,14 @@ export default function MapView({
     }
   };
 
+  const polylineSig = useMemo(
+    () =>
+      polylines
+        .map((p) => `${p.strokeColor ?? ''}|${p.lineDashPattern?.join(',') ?? ''}|${p.coordinates.length}`)
+        .join(';'),
+    [polylines],
+  );
+
   const leafletHtml = useMemo(
     () =>
       buildLeafletHtml(activeRegion, markers, polylines, polygons, circles, {
@@ -264,6 +272,7 @@ export default function MapView({
       activeRegion.latitudeDelta,
       markers.length,
       polylines.length,
+      polylineSig,
       polygons.length,
       circles.length,
       mapType,

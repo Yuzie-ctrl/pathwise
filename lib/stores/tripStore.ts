@@ -23,6 +23,14 @@ export interface RouteLeg {
   distanceMeters: number;
   durationSeconds: number;
   coordinates: { latitude: number; longitude: number }[];
+  /**
+   * Transport sub-mode for this leg. Used for per-segment styling
+   * (e.g. walking = green dashed, bus = purple solid).
+   * Defaults to the trip's global mode when absent.
+   */
+  mode?: TransportMode;
+  /** Index of the logical stop-to-stop segment this leg belongs to. */
+  segmentIndex?: number;
 }
 
 export interface SearchHistoryItem {
@@ -41,17 +49,22 @@ interface TripState {
   navigating: boolean;
   searchHistory: SearchHistoryItem[];
   /**
-   * Optional override for leg geometry — set after a freehand drawing is
+   * Optional overrides for leg geometry — set after a freehand drawing is
    * matched to roads. If present, the route computation will use this
    * polyline instead of querying OSRM between stops `fromStopId` → `toStopId`.
+   * May contain multiple overrides for different legs.
    */
-  drawnRoute: {
+  drawnRoutes: {
     fromStopId: string;
     toStopId: string;
     coordinates: { latitude: number; longitude: number }[];
     distanceMeters: number;
     durationSeconds: number;
-  } | null;
+    /** True when the drawing is only a segment of the full leg —
+     *  router should still build from-stop → drawing-start and
+     *  drawing-end → to-stop. */
+    partial?: boolean;
+  }[];
   ensureOrigin: (coords?: { latitude: number; longitude: number }) => void;
   setOriginToMyLocation: (coords: { latitude: number; longitude: number }) => void;
   setOriginToPlace: (place: {
@@ -74,7 +87,9 @@ interface TripState {
   setNavigating: (n: boolean) => void;
   addToHistory: (item: Omit<SearchHistoryItem, 'ts'>) => void;
   clearHistory: () => void;
-  setDrawnRoute: (route: TripState['drawnRoute']) => void;
+  setDrawnRoutes: (routes: TripState['drawnRoutes']) => void;
+  addDrawnRoute: (route: TripState['drawnRoutes'][number]) => void;
+  removeDrawnRouteForLeg: (fromStopId: string, toStopId: string) => void;
 }
 
 function uid() {
@@ -90,7 +105,7 @@ export const useTripStore = create<TripState>()(
       loadingRoute: false,
       navigating: false,
       searchHistory: [],
-      drawnRoute: null,
+      drawnRoutes: [],
 
       ensureOrigin: (coords) => {
         const { stops } = get();
@@ -204,12 +219,28 @@ export const useTripStore = create<TripState>()(
           return { stops: next };
         }),
 
-      clearStops: () => set({ stops: [], legs: [], navigating: false, drawnRoute: null }),
+      clearStops: () => set({ stops: [], legs: [], navigating: false, drawnRoutes: [] }),
       setMode: (mode) => set({ mode }),
       setLegs: (legs) => set({ legs }),
       setLoadingRoute: (loading) => set({ loadingRoute: loading }),
       setNavigating: (navigating) => set({ navigating }),
-      setDrawnRoute: (drawnRoute) => set({ drawnRoute }),
+      setDrawnRoutes: (drawnRoutes) => set({ drawnRoutes }),
+      addDrawnRoute: (route) =>
+        set((state) => ({
+          drawnRoutes: [
+            ...state.drawnRoutes.filter(
+              (r) =>
+                !(r.fromStopId === route.fromStopId && r.toStopId === route.toStopId),
+            ),
+            route,
+          ],
+        })),
+      removeDrawnRouteForLeg: (fromStopId, toStopId) =>
+        set((state) => ({
+          drawnRoutes: state.drawnRoutes.filter(
+            (r) => !(r.fromStopId === fromStopId && r.toStopId === toStopId),
+          ),
+        })),
 
       addToHistory: (item) =>
         set((state) => {

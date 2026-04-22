@@ -13,6 +13,7 @@ import { DrawCanvas } from '@/components/DrawCanvas';
 import { NavigationBar } from '@/components/NavigationBar';
 import { RoutePlanner } from '@/components/RoutePlanner';
 import { SearchSheet } from '@/components/SearchSheet';
+import { TransitPlanner } from '@/components/TransitPlanner';
 import { Text } from '@/components/ui/text';
 import {
   fetchRoute,
@@ -61,8 +62,9 @@ export default function Home() {
   const clearStops = useTripStore((s) => s.clearStops);
   const navigating = useTripStore((s) => s.navigating);
   const setNavigating = useTripStore((s) => s.setNavigating);
-  const drawnRoute = useTripStore((s) => s.drawnRoute);
-  const setDrawnRoute = useTripStore((s) => s.setDrawnRoute);
+  const drawnRoutes = useTripStore((s) => s.drawnRoutes);
+  const addDrawnRoute = useTripStore((s) => s.addDrawnRoute);
+  const setDrawnRoutes = useTripStore((s) => s.setDrawnRoutes);
 
   const [region, setRegion] = useState<MapRegion>(DEFAULT_REGION);
   const [userLocation, setUserLocation] = useState<{
@@ -76,6 +78,9 @@ export default function Home() {
   const [locating, setLocating] = useState(false);
   const [drawing, setDrawing] = useState(false);
   const [drawProcessing, setDrawProcessing] = useState(false);
+  /** When non-null, the current drawing session is for a partial override
+   *  targeting the leg ending at this stop id (pre+draw+post get stitched). */
+  const [drawTargetStopId, setDrawTargetStopId] = useState<string | null>(null);
 
   const routeReqRef = useRef(0);
 
@@ -157,7 +162,7 @@ export default function Home() {
     const reqId = ++routeReqRef.current;
     const controller = new AbortController();
     setLoadingRoute(true);
-    fetchRoute(stops, mode, controller.signal, drawnRoute)
+    fetchRoute(stops, mode, controller.signal, drawnRoutes)
       .then((newLegs) => {
         if (reqId !== routeReqRef.current) return;
         setLegs(newLegs);
@@ -171,7 +176,7 @@ export default function Home() {
         setLoadingRoute(false);
       });
     return () => controller.abort();
-  }, [stops, mode, setLegs, setLoadingRoute, drawnRoute]);
+  }, [stops, mode, setLegs, setLoadingRoute, drawnRoutes]);
 
   // ---------------------------------------------------------------------
   // Fit camera to stops when planner is visible
@@ -179,9 +184,9 @@ export default function Home() {
   useEffect(() => {
     if (navigating) return;
     if (stops.length < 2) return;
-    // When the active leg is a freehand drawing, don't auto-fit — the user just
-    // drew it and any camera change would visually reflow/shift the view.
-    if (drawnRoute) return;
+    // When any drawn override exists, don't auto-fit — the user just drew
+    // it and any camera change would visually reflow/shift the view.
+    if (drawnRoutes.length > 0) return;
     const valid = stops.filter((s) => s.latitude !== 0 || s.longitude !== 0);
     if (valid.length < 2) return;
     const lats = valid.map((s) => s.latitude);
@@ -198,7 +203,7 @@ export default function Home() {
       latitudeDelta: latDelta,
       longitudeDelta: lonDelta,
     });
-  }, [stops, navigating, drawnRoute]);
+  }, [stops, navigating, drawnRoutes]);
 
   // ---------------------------------------------------------------------
   // Derived map data
@@ -223,14 +228,17 @@ export default function Home() {
       }
       return [];
     }
-    return legs.map((leg, i) => ({
-      id: `leg-${i}`,
-      coordinates: leg.coordinates,
-      strokeColor: style.color,
-      strokeWidth: style.width,
-      lineDashPattern: style.dashed ? [8, 6] : undefined,
-    }));
-  }, [legs, stops, style]);
+    return legs.map((leg, i) => {
+      const legStyle = MODE_STYLE[leg.mode ?? mode];
+      return {
+        id: `leg-${i}`,
+        coordinates: leg.coordinates,
+        strokeColor: legStyle.color,
+        strokeWidth: legStyle.width,
+        lineDashPattern: legStyle.dashed ? [8, 6] : undefined,
+      };
+    });
+  }, [legs, stops, style, mode]);
 
   const markers: MapMarker[] = useMemo(() => {
     const out: MapMarker[] = [];
@@ -246,14 +254,23 @@ export default function Home() {
       });
     });
 
-    // Numbered leg badges at the midpoint of each leg
+    // Numbered segment badges — place at midpoint of each logical segment
+    // (all legs with the same segmentIndex are combined, so partial-draw
+    // segments don't get 3 badges).
+    const segments = new Map<number, { latitude: number; longitude: number }[]>();
     legs.forEach((leg, i) => {
-      const mid = midpointOfLine(leg.coordinates);
+      const segIdx = leg.segmentIndex ?? i;
+      const list = segments.get(segIdx) ?? [];
+      list.push(...leg.coordinates);
+      segments.set(segIdx, list);
+    });
+    segments.forEach((coords, segIdx) => {
+      const mid = midpointOfLine(coords);
       if (!mid) return;
       out.push({
-        id: `leg-badge-${i}`,
+        id: `leg-badge-${segIdx}`,
         coordinate: mid,
-        badgeText: String(i + 1),
+        badgeText: String(segIdx + 1),
         badgeColor: style.color,
       });
     });
@@ -397,12 +414,35 @@ export default function Home() {
         Alert.alert('Не удалось', 'Не получилось распознать маршрут');
         return;
       }
+
+      // Case A — drawing for a specific destination stop (partial route)
+      if (drawTargetStopId) {
+        const currentStops = useTripStore.getState().stops;
+        const toIdx = currentStops.findIndex((s) => s.id === drawTargetStopId);
+        if (toIdx <= 0) {
+          setDrawTargetStopId(null);
+          setDrawing(false);
+          return;
+        }
+        const fromStop = currentStops[toIdx - 1];
+        const toStop = currentStops[toIdx];
+        addDrawnRoute({
+          fromStopId: fromStop.id,
+          toStopId: toStop.id,
+          coordinates: matched.coordinates,
+          distanceMeters: matched.distanceMeters,
+          durationSeconds: matched.durationSeconds,
+          partial: true,
+        });
+        setDrawTargetStopId(null);
+        setDrawing(false);
+        setPlannerCollapsed(false);
+        return;
+      }
+
+      // Case B — fresh drawn trip (2 stops, full override)
       const first = matched.coordinates[0];
       const last = matched.coordinates[matched.coordinates.length - 1];
-
-      // Reset any existing trip and build a fresh 2-stop one whose single leg
-      // is overridden with the drawn (road-matched) polyline, so the router
-      // doesn't "shortcut" the drawing.
       clearStops();
       setOriginToPlace({
         label: 'Начало маршрута',
@@ -414,28 +454,35 @@ export default function Home() {
         latitude: last.latitude,
         longitude: last.longitude,
       });
-
-      // Grab the new stop IDs to link the override to them.
       const newStops = useTripStore.getState().stops;
       if (newStops.length >= 2) {
-        setDrawnRoute({
-          fromStopId: newStops[0].id,
-          toStopId: newStops[1].id,
-          coordinates: matched.coordinates,
-          distanceMeters: matched.distanceMeters,
-          durationSeconds: matched.durationSeconds,
-        });
+        setDrawnRoutes([
+          {
+            fromStopId: newStops[0].id,
+            toStopId: newStops[1].id,
+            coordinates: matched.coordinates,
+            distanceMeters: matched.distanceMeters,
+            durationSeconds: matched.durationSeconds,
+          },
+        ]);
       }
-
       setDrawing(false);
-      // Open the planner collapsed — user can tap the grabber to expand.
-      // Also don't auto-fit camera (would zoom in and visually shift the drawn line).
       setPlannerCollapsed(true);
     } catch {
       Alert.alert('Ошибка', 'Не удалось построить маршрут по рисунку');
     } finally {
       setDrawProcessing(false);
     }
+  };
+
+  const handleDrawForStop = useCallback((stopId: string) => {
+    setDrawTargetStopId(stopId);
+    setDrawing(true);
+  }, []);
+
+  const handleCancelDrawing = () => {
+    setDrawing(false);
+    setDrawTargetStopId(null);
   };
 
   const handleUserLocationUpdate = useCallback(
@@ -562,8 +609,8 @@ export default function Home() {
         </View>
       ) : null}
 
-      {/* Planner bottom sheet */}
-      {plannerVisible && !navigating ? (
+      {/* Planner bottom sheet (non-transit modes) */}
+      {plannerVisible && !navigating && mode !== 'transit' ? (
         <RoutePlanner
           collapsed={plannerCollapsed}
           onToggleCollapsed={() => setPlannerCollapsed((v) => !v)}
@@ -571,6 +618,17 @@ export default function Home() {
           onStartTrip={handleStartTrip}
           onChangeOrigin={openOriginSearch}
           onAddStop={openStopSearch}
+          onDrawForStop={handleDrawForStop}
+        />
+      ) : null}
+
+      {/* Transit full-screen planner */}
+      {plannerVisible && !navigating && mode === 'transit' ? (
+        <TransitPlanner
+          onClose={handleClosePlanner}
+          onAddStop={openStopSearch}
+          onChangeOrigin={openOriginSearch}
+          onDrawForStop={handleDrawForStop}
         />
       ) : null}
 
@@ -579,7 +637,7 @@ export default function Home() {
         <DrawCanvas
           region={region}
           onRegionChange={setRegion}
-          onCancel={() => setDrawing(false)}
+          onCancel={handleCancelDrawing}
           onConfirm={handleConfirmDrawing}
           processing={drawProcessing}
         />
