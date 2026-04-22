@@ -874,6 +874,11 @@ export function buildTransitOptions(
       const kindForHop = v.kinds[h % v.kinds.length] ?? 'bus';
       const busDist = hopDist * (1 - walkFracPerSide * (isFirstHop ? 2 : 1));
       const busSec = Math.max(60, Math.round(hopDur - (isFirstHop ? 2 : 1) * (walkFracPerSide * hopDist) / AVG_SPEED_MPS.walking));
+      const stopsCount = Math.max(2, Math.round((busDist / 1000) * 1.2));
+      const intermediateStops: string[] = [];
+      for (let s = 1; s < stopsCount; s++) {
+        intermediateStops.push(`Остановка ${s}`);
+      }
       segments.push({
         kind: kindForHop === 'tram' ? 'tram' : kindForHop === 'train' ? 'train' : 'bus',
         durationSeconds: busSec,
@@ -882,7 +887,8 @@ export function buildTransitOptions(
         vehicleKind: kindForHop,
         from: 'Остановка',
         to: isLastHop ? 'Остановка' : `Пересадка · ${toLabel}`,
-        stopsCount: Math.max(2, Math.round((busDist / 1000) * 1.2)),
+        stopsCount,
+        intermediateStops,
       });
 
       // Dwell at this stop (non-final stops)

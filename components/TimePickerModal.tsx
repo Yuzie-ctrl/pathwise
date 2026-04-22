@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef } from 'react';
 import {
   FlatList,
   Modal,
-  Platform,
   Pressable,
   ScrollView,
   View,
@@ -76,10 +75,25 @@ function WheelColumn({
 
   const initialIndex = Math.max(0, values.indexOf(selected));
 
-  const commitFromOffset = (offsetY: number) => {
+  /** Commit the current scroll offset to the nearest integer value AND
+   *  force-snap the list so the wheel never rests between rows. */
+  const commitAndSnap = (offsetY: number) => {
     const idx = Math.round(offsetY / ITEM_HEIGHT);
     const clamped = Math.max(0, Math.min(values.length - 1, idx));
     const v = values[clamped];
+    const targetOffset = clamped * ITEM_HEIGHT;
+    // Always force-snap to the exact row offset — `snapToInterval` does not
+    // always land cleanly on web mouse-wheel/trackpad scrolls.
+    if (Math.abs(offsetY - targetOffset) > 0.5) {
+      try {
+        listRef.current?.scrollToOffset({
+          offset: targetOffset,
+          animated: true,
+        });
+      } catch {
+        // ignore
+      }
+    }
     if (v !== lastReportedRef.current) {
       lastReportedRef.current = v;
       onSelect(v);
@@ -96,7 +110,7 @@ function WheelColumn({
 
   const handleScrollEnd = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     userScrollingRef.current = false;
-    commitFromOffset(e.nativeEvent.contentOffset.y);
+    commitAndSnap(e.nativeEvent.contentOffset.y);
   };
 
   // Web (and sometimes native) does NOT emit `onMomentumScrollEnd` reliably
@@ -107,8 +121,8 @@ function WheelColumn({
     if (commitTimerRef.current) clearTimeout(commitTimerRef.current);
     commitTimerRef.current = setTimeout(() => {
       userScrollingRef.current = false;
-      commitFromOffset(offset);
-    }, 140);
+      commitAndSnap(offset);
+    }, 160);
   };
 
   useEffect(() => {
@@ -155,7 +169,7 @@ function WheelColumn({
         onMomentumScrollBegin={onScrollBegin}
         onMomentumScrollEnd={handleScrollEnd}
         onScrollEndDrag={handleScrollEnd}
-        onScroll={Platform.OS === 'web' ? handleScroll : undefined}
+        onScroll={handleScroll}
         contentContainerStyle={{ paddingVertical: ITEM_HEIGHT * 2 }}
         // On web, allow wheel events via the default overflow scroll
         renderItem={({ item }) => {

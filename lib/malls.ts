@@ -24,8 +24,8 @@ export const MALLS: Mall[] = [
   {
     id: 't1',
     name: 'T1 Mall of Tallinn',
-    latitude: 59.4262,
-    longitude: 24.7746,
+    latitude: 59.4244,
+    longitude: 24.7922,
     floors: [
       {
         number: 1,
@@ -52,8 +52,8 @@ export const MALLS: Mall[] = [
   {
     id: 'ulemiste',
     name: 'Ülemiste Keskus',
-    latitude: 59.4242,
-    longitude: 24.795,
+    latitude: 59.4217,
+    longitude: 24.7944,
     floors: [
       { number: 1, label: '1 этаж', image: null },
       { number: 2, label: '2 этаж', image: null },
@@ -63,8 +63,8 @@ export const MALLS: Mall[] = [
   {
     id: 'viru',
     name: 'Viru Keskus',
-    latitude: 59.4372,
-    longitude: 24.755,
+    latitude: 59.4366,
+    longitude: 24.7533,
     floors: [
       { number: 1, label: '1 этаж', image: null },
       { number: 2, label: '2 этаж', image: null },
@@ -150,8 +150,8 @@ export const MALLS: Mall[] = [
   {
     id: 'rocca',
     name: 'Rocca al Mare',
-    latitude: 59.4292,
-    longitude: 24.6588,
+    latitude: 59.4264,
+    longitude: 24.6514,
     floors: [
       { number: 1, label: '1 этаж', image: null },
       { number: 2, label: '2 этаж', image: null },

@@ -3,6 +3,7 @@ import { Pressable, ScrollView, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   ArrowDown,
+  ArrowLeft,
   ArrowLeftRight,
   ArrowUp,
   Bike,
@@ -176,6 +177,14 @@ export function TransitPlanner({
     onSelectOption?.(null);
   };
 
+  /** X in detail — close the entire transit planner and return to main map. */
+  const closeDetailAndPlanner = () => {
+    setDetailOption(null);
+    setDetailPos('compact');
+    onSelectOption?.(null);
+    onClose();
+  };
+
   // ---------------------------------------------------------------------
   // Detail-only mode: when a user picks a transit option, the planner
   // shell (mode chips, time row, stops list, filter, options list) is
@@ -201,7 +210,8 @@ export function TransitPlanner({
             )
           }
           onSelectPosition={setDetailPos}
-          onClose={closeDetail}
+          onBack={closeDetail}
+          onClose={closeDetailAndPlanner}
           onZoomToSegment={(idx) => {
             setDetailPos('collapsed');
             onZoomToSegment?.(idx);
@@ -655,6 +665,7 @@ interface DetailSheetProps {
   position: 'compact' | 'expanded' | 'collapsed';
   onTogglePosition: () => void;
   onSelectPosition: (p: 'compact' | 'expanded' | 'collapsed') => void;
+  onBack: () => void;
   onClose: () => void;
   onZoomToSegment: (segmentIndex: number) => void;
   totalDistance: number;
@@ -668,6 +679,7 @@ function DetailSheet({
   position,
   onTogglePosition,
   onSelectPosition: _onSelectPosition,
+  onBack,
   onClose,
   onZoomToSegment,
   totalDistance: _totalDistance,
@@ -703,8 +715,15 @@ function DetailSheet({
         <View className="h-1.5 w-12 rounded-full bg-muted-foreground/40" />
       </Pressable>
 
-      {/* Top header row — bus pill chain + walker minutes + close */}
+      {/* Top header row — back + bus pill chain + walker minutes + close */}
       <View className="flex-row items-center gap-2 border-b border-border px-4 pb-3">
+        <Pressable
+          onPress={onBack}
+          hitSlop={8}
+          className="h-8 w-8 items-center justify-center rounded-full bg-muted active:bg-muted/70"
+        >
+          <ArrowLeft size={16} color="#666" />
+        </Pressable>
         <View className="flex-1 flex-row flex-wrap items-center gap-1">
           {pillSummary.map((p, i) => (
             <View key={i} className="flex-row items-center gap-1">
@@ -861,12 +880,13 @@ function Timeline({
           fromLabel={seg.from}
           toLabel={seg.to}
           stopsCount={seg.stopsCount ?? 0}
+          intermediateStops={seg.intermediateStops}
           durationSec={seg.durationSeconds}
           startTime={time(elapsed)}
           endTime={time(elapsed + seg.durationSeconds)}
           isFirst={i === 0 || (prev && prev.kind === 'walk' && i === 1)}
           isTransferAfter={!!isTransferNext}
-          onPress={() => onZoomToSegment(i)}
+          onZoom={() => onZoomToSegment(i)}
         />,
       );
 
@@ -1023,25 +1043,28 @@ function BusRow({
   fromLabel: _fromLabel,
   toLabel: _toLabel,
   stopsCount,
+  intermediateStops,
   durationSec,
   startTime: _startTime,
   endTime: _endTime,
   isFirst: _isFirst,
   isTransferAfter: _isTransferAfter,
-  onPress,
+  onZoom,
 }: {
   line: string;
   fromLabel: string;
   toLabel: string;
   stopsCount: number;
+  intermediateStops?: string[];
   durationSec: number;
   startTime: string;
   endTime: string;
   isFirst: boolean;
   isTransferAfter: boolean;
-  onPress: () => void;
+  onZoom: () => void;
 }) {
   const minutes = Math.max(1, Math.round(durationSec / 60));
+  const [stopsOpen, setStopsOpen] = useState(false);
   return (
     <View className="flex-row">
       {/* Solid red rail column */}
@@ -1057,12 +1080,12 @@ function BusRow({
           }}
         />
       </View>
-      <Pressable
-        onPress={onPress}
-        className="flex-1 py-3 pr-2 active:bg-muted/30"
-      >
-        {/* Bus line + destination */}
-        <View className="flex-row items-center gap-2">
+      <View className="flex-1 py-3 pr-2">
+        {/* Bus line + destination — top chevron zooms to map */}
+        <Pressable
+          onPress={onZoom}
+          className="flex-row items-center gap-2 active:opacity-80"
+        >
           <View
             className="rounded-md px-2 py-1"
             style={{ backgroundColor: RAIL_COLOR }}
@@ -1070,19 +1093,52 @@ function BusRow({
             <Text className="text-sm font-bold text-white">{line}</Text>
           </View>
           <Bus size={16} color="#111" />
-          <Text className="flex-1 text-sm font-semibold text-foreground" numberOfLines={1}>
+          <Text
+            className="flex-1 text-sm font-semibold text-foreground"
+            numberOfLines={1}
+          >
             Маршрут {line}
           </Text>
           <ChevronRight size={18} color="#999" />
-        </View>
-        {/* Info row */}
-        <View className="mt-2 flex-row items-center gap-1 pl-1">
-          <ChevronDown size={14} color="#777" />
+        </Pressable>
+        {/* Info row — expands inline stops list */}
+        <Pressable
+          onPress={() => setStopsOpen((v) => !v)}
+          hitSlop={6}
+          className="mt-2 flex-row items-center gap-1 pl-1 active:opacity-70"
+        >
+          {stopsOpen ? (
+            <ChevronUp size={14} color="#777" />
+          ) : (
+            <ChevronDown size={14} color="#777" />
+          )}
           <Text className="text-xs text-muted-foreground">
             Сколько ехать: {stopsCount > 0 ? `${stopsCount} ост. ` : ''}({minutes} мин.)
           </Text>
-        </View>
-      </Pressable>
+        </Pressable>
+        {stopsOpen && intermediateStops && intermediateStops.length > 0 ? (
+          <View className="mt-2 rounded-lg bg-muted/40 px-3 py-2">
+            {intermediateStops.map((name, idx) => (
+              <View
+                key={idx}
+                className="flex-row items-center gap-2 py-1"
+              >
+                <View
+                  style={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: 3,
+                    backgroundColor: RAIL_COLOR,
+                  }}
+                />
+                <Text className="text-xs text-foreground" numberOfLines={1}>
+                  {idx + 1}. {name}
+                </Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
+      </View>
     </View>
   );
 }

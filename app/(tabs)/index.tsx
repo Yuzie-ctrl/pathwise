@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Location from 'expo-location';
-import { Brush, Locate, Search } from 'lucide-react-native';
+import { Brush, Eye, EyeOff, Locate, Search } from 'lucide-react-native';
 
 import MapView, {
   type MapMarker,
@@ -90,6 +90,8 @@ export default function Home() {
     useState<TransitOption | null>(null);
   /** Mall POI sheet — shown when the user taps a mall pin on the map. */
   const [activeMall, setActiveMall] = useState<Mall | null>(null);
+  /** Whether mall pins are rendered on the map. Toggled with the store button. */
+  const [mallsVisible, setMallsVisible] = useState(true);
 
   const routeReqRef = useRef(0);
 
@@ -398,8 +400,9 @@ export default function Home() {
     }
 
     // Mall POI pins — always visible. Tapping one opens the MallSheet.
-    // Only add when not navigating (to keep arrival UI clean).
-    if (!navigating) {
+    // Only add when not navigating (to keep arrival UI clean) and when
+    // the user has not hidden them via the toggle.
+    if (!navigating && mallsVisible) {
       MALLS.forEach((m) => {
         const mallBadge = `<div style="pointer-events:none;display:flex;align-items:center;justify-content:center;min-width:28px;height:28px;padding:0 8px;border-radius:14px;background:#111827;color:#fff;font-size:11px;font-weight:700;box-shadow:0 2px 6px rgba(0,0,0,0.35);border:2px solid #fff;white-space:nowrap">🛍 ${m.name.split(' ')[0]}</div>`;
         out.push({
@@ -410,7 +413,7 @@ export default function Home() {
       });
     }
     return out;
-  }, [stops, legs, userLocation, style, heading, drawing, drawTargetStopId, navigating]);
+  }, [stops, legs, userLocation, style, heading, drawing, drawTargetStopId, navigating, mallsVisible]);
 
   // ---------------------------------------------------------------------
   // Handlers
@@ -548,12 +551,11 @@ export default function Home() {
           durationSeconds: matched.durationSeconds,
           partial: true,
         });
-        // After a partial drawing, switch the trip mode to walking — per product
-        // spec this reflects the pedestrian intent of the freehand sketch.
-        useTripStore.getState().setMode('walking');
+        // Preserve the currently selected transport mode — the user may have
+        // drawn a bus override, a driving override, etc. Do NOT force walking.
         setDrawTargetStopId(null);
         setDrawing(false);
-        setPlannerCollapsed(false);
+        setPlannerCollapsed(true);
         return;
       }
 
@@ -561,8 +563,9 @@ export default function Home() {
       const first = matched.coordinates[0];
       const last = matched.coordinates[matched.coordinates.length - 1];
       clearStops();
-      // After a full sketched route, default to walking mode — matches the
-      // pedestrian / exploratory nature of a drawn path.
+      // Fresh drawn trip — default to walking because a freehand path is
+      // usually pedestrian-intent. Anything else would require an existing
+      // trip which we don't have here.
       useTripStore.getState().setMode('walking');
       setOriginToPlace({
         label: 'Начало маршрута',
@@ -768,59 +771,87 @@ export default function Home() {
 
       {/* Floating controls (right side) */}
       {!drawing ? (
-        <View
-          className="absolute right-4"
-          style={{
-            // When a transit option is selected (detail sheet open), the
-            // locate button jumps to the very top-right of the screen so
-            // it never overlaps the half-screen sheet and the brush button
-            // is hidden entirely.
-            top: selectedTransitOption ? 60 : undefined,
-            bottom: selectedTransitOption
-              ? undefined
-              : plannerVisible && !plannerCollapsed
-                ? 360
-                : plannerVisible && plannerCollapsed
-                  ? 120
-                  : 40,
-          }}
+        <SafeAreaView
+          edges={['top']}
           pointerEvents="box-none"
+          style={{
+            position: 'absolute',
+            right: 0,
+            left: 0,
+            top: selectedTransitOption ? 0 : undefined,
+            bottom: selectedTransitOption ? undefined : 0,
+          }}
         >
-          {showBrush && !selectedTransitOption ? (
-            <Pressable
-              onPress={() => setDrawing(true)}
-              className="mb-3 h-12 w-12 items-center justify-center rounded-full bg-card"
-              style={{
-                shadowColor: '#000',
-                shadowOffset: { width: 0, height: 2 },
-                shadowOpacity: 0.18,
-                shadowRadius: 6,
-                elevation: 6,
-              }}
-            >
-              <Brush size={20} color="#2563eb" />
-            </Pressable>
-          ) : null}
-          {!navigating ? (
-            <Pressable
-              onPress={locate}
-              className="h-12 w-12 items-center justify-center rounded-full bg-card"
-              style={{
-                shadowColor: '#000',
-                shadowOffset: { width: 0, height: 2 },
-                shadowOpacity: 0.18,
-                shadowRadius: 6,
-                elevation: 6,
-              }}
-            >
-              {locating ? (
-                <ActivityIndicator size="small" />
-              ) : (
-                <Locate size={22} color="#2563eb" />
-              )}
-            </Pressable>
-          ) : null}
-        </View>
+          <View
+            className="absolute right-4"
+            style={{
+              top: selectedTransitOption ? 8 : undefined,
+              bottom: selectedTransitOption
+                ? undefined
+                : plannerVisible && !plannerCollapsed
+                  ? 360
+                  : plannerVisible && plannerCollapsed
+                    ? 120
+                    : 40,
+            }}
+            pointerEvents="box-none"
+          >
+            {showBrush && !selectedTransitOption ? (
+              <Pressable
+                onPress={() => setDrawing(true)}
+                className="mb-3 h-12 w-12 items-center justify-center rounded-full bg-card"
+                style={{
+                  shadowColor: '#000',
+                  shadowOffset: { width: 0, height: 2 },
+                  shadowOpacity: 0.18,
+                  shadowRadius: 6,
+                  elevation: 6,
+                }}
+              >
+                <Brush size={20} color="#2563eb" />
+              </Pressable>
+            ) : null}
+            {/* Mall visibility toggle — always available while the map is shown */}
+            {!navigating ? (
+              <Pressable
+                onPress={() => setMallsVisible((v) => !v)}
+                className="mb-3 h-12 w-12 items-center justify-center rounded-full bg-card"
+                style={{
+                  shadowColor: '#000',
+                  shadowOffset: { width: 0, height: 2 },
+                  shadowOpacity: 0.18,
+                  shadowRadius: 6,
+                  elevation: 6,
+                }}
+              >
+                {mallsVisible ? (
+                  <Eye size={20} color="#2563eb" />
+                ) : (
+                  <EyeOff size={20} color="#6b7280" />
+                )}
+              </Pressable>
+            ) : null}
+            {!navigating ? (
+              <Pressable
+                onPress={locate}
+                className="h-12 w-12 items-center justify-center rounded-full bg-card"
+                style={{
+                  shadowColor: '#000',
+                  shadowOffset: { width: 0, height: 2 },
+                  shadowOpacity: 0.18,
+                  shadowRadius: 6,
+                  elevation: 6,
+                }}
+              >
+                {locating ? (
+                  <ActivityIndicator size="small" />
+                ) : (
+                  <Locate size={22} color="#2563eb" />
+                )}
+              </Pressable>
+            ) : null}
+          </View>
+        </SafeAreaView>
       ) : null}
 
       {/* Planner bottom sheet (non-transit modes) */}
