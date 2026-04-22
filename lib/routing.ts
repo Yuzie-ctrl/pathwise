@@ -118,13 +118,20 @@ const OSRM_PROFILES: Record<TransportMode, string> = {
   transit: 'car',
 };
 
-// Approximate ratios applied to the car duration to simulate each mode.
-// (Car in city ≈ 30 km/h. Foot ≈ 5 km/h → 6×. Bike ≈ 15 km/h → 2×. Bus ≈ 1.4×.)
-const DURATION_MULTIPLIER: Record<TransportMode, number> = {
-  driving: 1,
-  walking: 6,
-  cycling: 2,
-  transit: 1.4,
+// Realistic average speeds (m/s) used to synthesize per-mode travel time
+// from the leg's *actual* road-network distance. Using distance (not the
+// car duration) keeps ETAs honest: car duration drops with highway bias,
+// but for walking/cycling what matters is kilometers.
+//
+// Urban car  ≈ 40 km/h (signal-corrected)    = 11.1 m/s
+// Walking    ≈ 4.8 km/h (brisk)              =  1.33 m/s
+// Cycling    ≈ 15 km/h                       =  4.17 m/s
+// City bus   ≈ 22 km/h (stops + wait factored in later)
+const AVG_SPEED_MPS: Record<TransportMode, number> = {
+  driving: 11.1,
+  walking: 1.33,
+  cycling: 4.17,
+  transit: 6.1,
 };
 
 interface OsrmRoute {
@@ -157,7 +164,7 @@ export async function fetchRoute(
   if (stops.length < 2) return [];
 
   const profile = OSRM_PROFILES[mode];
-  const multiplier = DURATION_MULTIPLIER[mode] ?? 1;
+  const speed = AVG_SPEED_MPS[mode] ?? AVG_SPEED_MPS.driving;
 
   // Query OSRM once per leg so each polyline is guaranteed to start/end
   // exactly at the waypoint coordinates (no gaps, no overshoot).
@@ -182,7 +189,7 @@ export async function fetchRoute(
         };
         legs.push({
           distanceMeters: override.distanceMeters,
-          durationSeconds: Math.round(override.durationSeconds * multiplier),
+          durationSeconds: Math.round(override.distanceMeters / speed),
           coordinates: coords,
           segmentIndex: i,
           mode,
@@ -196,15 +203,12 @@ export async function fetchRoute(
       const drawEnd = override.coordinates[override.coordinates.length - 1];
       const preCoords = await tryOsrmRoute(profile, a, drawStart, signal);
       const postCoords = await tryOsrmRoute(profile, drawEnd, b, signal);
-      const preDist = routeDistanceMeters(preCoords);
-      const postDist = routeDistanceMeters(postCoords);
-      const carSpeed = 30 / 3.6; // m/s approx
+      const preDist = preCoords.distance ?? routeDistanceMeters(preCoords);
+      const postDist = postCoords.distance ?? routeDistanceMeters(postCoords);
       if (preCoords.coordinates.length >= 2) {
         legs.push({
-          distanceMeters: preCoords.distance ?? preDist,
-          durationSeconds: Math.round(
-            ((preCoords.duration ?? preDist / carSpeed) * multiplier),
-          ),
+          distanceMeters: preDist,
+          durationSeconds: Math.round(preDist / speed),
           coordinates: preCoords.coordinates,
           segmentIndex: i,
           mode,
@@ -212,17 +216,15 @@ export async function fetchRoute(
       }
       legs.push({
         distanceMeters: override.distanceMeters,
-        durationSeconds: Math.round(override.durationSeconds * multiplier),
+        durationSeconds: Math.round(override.distanceMeters / speed),
         coordinates: override.coordinates,
         segmentIndex: i,
         mode,
       });
       if (postCoords.coordinates.length >= 2) {
         legs.push({
-          distanceMeters: postCoords.distance ?? postDist,
-          durationSeconds: Math.round(
-            ((postCoords.duration ?? postDist / carSpeed) * multiplier),
-          ),
+          distanceMeters: postDist,
+          durationSeconds: Math.round(postDist / speed),
           coordinates: postCoords.coordinates,
           segmentIndex: i,
           mode,
@@ -251,16 +253,20 @@ export async function fetchRoute(
       coords[coords.length - 1] = { latitude: b.latitude, longitude: b.longitude };
     }
 
+    // Duration derived from actual distance × mode-specific speed — honest
+    // ETAs regardless of what "duration" OSRM's car profile reports.
+    const legDuration = Math.round(route.distance / speed);
+
     // For transit mode, split each leg into walking-start / bus / walking-end
     // so the map can render them with different colours (walk = green dashed,
     // bus = purple solid) — Google-Maps-like visualization.
     if (mode === 'transit' && coords.length >= 6) {
-      const sub = splitTransitLeg(coords, route.distance, route.duration, i);
+      const sub = splitTransitLeg(coords, route.distance, legDuration, i);
       legs.push(...sub);
     } else {
       legs.push({
         distanceMeters: route.distance,
-        durationSeconds: Math.round(route.duration * multiplier),
+        durationSeconds: legDuration,
         coordinates: coords,
         segmentIndex: i,
         mode,
@@ -287,15 +293,16 @@ function splitTransitLeg(
   const walk2 = coords.slice(walkEndStart, n);
   const walkRatio = 0.12;
   const busRatio = 1 - walkRatio * 2;
-  // Time: walking slow, bus fast — override portions of total duration.
-  // Assume OSRM gave us "car-like" duration; transit ~1.4× overall.
-  const totalTransit = totalDur * 1.4;
-  const walkTime = totalDist * walkRatio * (1 / 1.4); // 1.4 m/s walking → seconds
-  const busTime = Math.max(0, totalTransit - walkTime * 2);
+  // Distribute the already-synthesized transit duration across sub-legs:
+  // walks are slow (≈ 1.33 m/s) and take time proportional to their length;
+  // whatever remains is the bus ride.
+  const walkDist = totalDist * walkRatio;
+  const walkTime = walkDist / AVG_SPEED_MPS.walking;
+  const busTime = Math.max(0, totalDur - walkTime * 2);
   return [
     {
       coordinates: walk1,
-      distanceMeters: totalDist * walkRatio,
+      distanceMeters: walkDist,
       durationSeconds: Math.round(walkTime),
       segmentIndex,
       mode: 'walking',
@@ -309,7 +316,7 @@ function splitTransitLeg(
     },
     {
       coordinates: walk2,
-      distanceMeters: totalDist * walkRatio,
+      distanceMeters: walkDist,
       durationSeconds: Math.round(walkTime),
       segmentIndex,
       mode: 'walking',
@@ -402,21 +409,39 @@ export async function matchDrawnRoute(
     return { coordinates: points, distanceMeters: 0, durationSeconds: 0 };
   }
 
-  // Measure how finely the user drew (avg meters between consecutive points).
-  let totalLen = 0;
-  let segCount = 0;
+  // 1) Drop near-duplicate samples (within 5 m). Noisy raw input causes
+  //    OSRM /match to hop into side streets for one sample and back.
+  const cleaned: { latitude: number; longitude: number }[] = [points[0]];
   for (let i = 1; i < points.length; i++) {
-    totalLen += haversine(points[i - 1], points[i]);
-    segCount++;
+    const last = cleaned[cleaned.length - 1];
+    if (haversine(last, points[i]) >= 5) {
+      cleaned.push(points[i]);
+    }
   }
-  const avgSpacing = segCount > 0 ? totalLen / segCount : 0;
-  const fine = avgSpacing < 20;
+  if (cleaned[cleaned.length - 1] !== points[points.length - 1]) {
+    cleaned.push(points[points.length - 1]);
+  }
 
-  // /match needs a trace that hugs the road: dense, ordered points.
-  // OSRM matching profile: we want each sample snapped to the CLOSEST road.
-  // More samples = tighter conformance to drawing.
-  const targetCount = fine ? 80 : Math.max(40, Math.min(90, Math.round(totalLen / 25)));
-  const resampled = resampleByDistance(points, targetCount);
+  let totalLen = 0;
+  for (let i = 1; i < cleaned.length; i++) {
+    totalLen += haversine(cleaned[i - 1], cleaned[i]);
+  }
+  if (totalLen < 10) {
+    return { coordinates: cleaned, distanceMeters: totalLen, durationSeconds: 0 };
+  }
+  const avgSpacing = totalLen / Math.max(1, cleaned.length - 1);
+  // "Fine" = user zoomed in and traced a small street/path deliberately.
+  const fine = avgSpacing < 12;
+
+  // 2) Resample with a MINIMUM spacing — never place waypoints closer than
+  //    35 m (fine) or 80 m (coarse). Waypoints closer than that let OSRM
+  //    justify a brief detour that comes right back.
+  const minStep = fine ? 35 : 80;
+  const targetCount = Math.max(
+    2,
+    Math.min(80, Math.round(totalLen / minStep) + 1),
+  );
+  const resampled = resampleByDistance(cleaned, targetCount);
   if (resampled.length < 2) {
     return { coordinates: points, distanceMeters: 0, durationSeconds: 0 };
   }
@@ -425,9 +450,10 @@ export async function matchDrawnRoute(
 
   // --- Primary: OSRM /match ------------------------------------------------
   // `radiuses` per-point controls how far OSRM may snap each sample. When the
-  // drawing is fine we want tight snap (stay on the small road the user drew);
-  // when the drawing is coarse, slightly more leeway so big roads win.
-  const matchRadius = fine ? 25 : 45;
+  // drawing is fine we keep radius moderate (30 m) to stay on the small road
+  // the user drew; coarse drawings get 60 m so major roads win. `tidy=true`
+  // lets OSRM drop obvious outliers — that's what prevents the short detours.
+  const matchRadius = fine ? 30 : 60;
   try {
     const coordsStr = resampled
       .map((p) => `${p.longitude},${p.latitude}`)
@@ -436,7 +462,7 @@ export async function matchDrawnRoute(
     const matchUrl =
       `https://router.project-osrm.org/match/v1/${profile}/${coordsStr}` +
       `?overview=full&geometries=geojson&radiuses=${radii}` +
-      `&gaps=ignore&tidy=false&annotations=false`;
+      `&gaps=ignore&tidy=true&annotations=false`;
     const res = await fetch(matchUrl, { signal });
     if (res.ok) {
       const data = (await res.json()) as {
@@ -469,10 +495,16 @@ export async function matchDrawnRoute(
           dur += m.duration ?? 0;
         }
         if (stitched.length >= 2) {
+          // Post-process: strip tiny back-and-forth spurs introduced when
+          // /match briefly detours into a side street and returns. We walk
+          // the polyline and look for short "U-turn" sub-sections (enter
+          // and exit a detour within <80 m) and cut them out.
+          const deSpurred = removeShortDetours(stitched, 80);
+          const finalDist = dist || routeDistanceMetersFlat(deSpurred);
           return {
-            coordinates: stitched,
-            distanceMeters: dist || routeDistanceMetersFlat(stitched),
-            durationSeconds: dur || stitched.length * 2,
+            coordinates: deSpurred,
+            distanceMeters: finalDist,
+            durationSeconds: dur || Math.round(finalDist / AVG_SPEED_MPS.driving),
           };
         }
       }
@@ -504,8 +536,9 @@ export async function matchDrawnRoute(
           latitude: lat,
           longitude: lon,
         }));
+        const deSpurred = removeShortDetours(coords2, 80);
         return {
-          coordinates: coords2,
+          coordinates: deSpurred,
           distanceMeters: r.distance,
           durationSeconds: r.duration,
         };
@@ -525,6 +558,45 @@ export async function matchDrawnRoute(
     distanceMeters: rawDist,
     durationSeconds: rawDist / 8.3,
   };
+}
+
+/**
+ * Walk the polyline and drop short "enter-then-exit" detours.
+ * A detour is detected when the polyline leaves the running main axis
+ * for a short distance (< maxDetourMeters) and comes back near its entry
+ * point — typical /match side-street false positives.
+ */
+function removeShortDetours(
+  coords: { latitude: number; longitude: number }[],
+  maxDetourMeters: number,
+): { latitude: number; longitude: number }[] {
+  if (coords.length < 5) return coords;
+  const out: { latitude: number; longitude: number }[] = [coords[0]];
+  let i = 1;
+  while (i < coords.length) {
+    const here = coords[i];
+    // Look ahead up to 30 points for a point that is close to `here` —
+    // if found quickly and the detour length is small, skip the loop.
+    let loopEndIdx = -1;
+    let accLen = 0;
+    const maxLookAhead = Math.min(30, coords.length - i - 1);
+    for (let j = 1; j <= maxLookAhead; j++) {
+      accLen += haversine(coords[i + j - 1], coords[i + j]);
+      if (accLen > maxDetourMeters) break;
+      if (haversine(here, coords[i + j]) < 20 && accLen > 40) {
+        loopEndIdx = i + j;
+        break;
+      }
+    }
+    out.push(here);
+    if (loopEndIdx > -1) {
+      // Jump past the loop.
+      i = loopEndIdx + 1;
+    } else {
+      i++;
+    }
+  }
+  return out;
 }
 
 function routeDistanceMetersFlat(

@@ -1,4 +1,4 @@
-import { useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import {
   FlatList,
   Modal,
@@ -32,7 +32,9 @@ const DAY_OPTIONS: { key: string; label: string; offsetDays: number }[] = [
   { key: 'd6', label: '+6 дней', offsetDays: 6 },
 ];
 
-const ITEM_HEIGHT = 40;
+const ITEM_HEIGHT = 44;
+const VISIBLE_ROWS = 5; // 2 above + selected + 2 below
+const LIST_HEIGHT = ITEM_HEIGHT * VISIBLE_ROWS;
 
 function WheelColumn({
   values,
@@ -46,36 +48,65 @@ function WheelColumn({
   pad?: number;
 }) {
   const listRef = useRef<FlatList<number>>(null);
-  const pendingRef = useRef<number | null>(null);
+  const lastReportedRef = useRef<number>(selected);
+  const userScrollingRef = useRef(false);
 
-  // Auto-scroll to selected when it changes externally
+  // Keep the wheel in sync when the outside `selected` prop changes
+  // (e.g. user tapped +5 min button). Skip if the user is mid-scroll
+  // so we don't fight the gesture.
+  useEffect(() => {
+    if (userScrollingRef.current) return;
+    const idx = values.indexOf(selected);
+    if (idx < 0) return;
+    if (lastReportedRef.current === selected) return;
+    lastReportedRef.current = selected;
+    // Defer to the next frame so FlatList is mounted.
+    requestAnimationFrame(() => {
+      try {
+        listRef.current?.scrollToOffset({
+          offset: idx * ITEM_HEIGHT,
+          animated: true,
+        });
+      } catch {
+        // ignore
+      }
+    });
+  }, [selected, values]);
+
   const initialIndex = Math.max(0, values.indexOf(selected));
 
-  const onMomentumEnd = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+  const onScrollBegin = () => {
+    userScrollingRef.current = true;
+  };
+
+  const handleScrollEnd = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    userScrollingRef.current = false;
     const offset = e.nativeEvent.contentOffset.y;
     const idx = Math.round(offset / ITEM_HEIGHT);
     const clamped = Math.max(0, Math.min(values.length - 1, idx));
     const v = values[clamped];
-    if (v !== pendingRef.current) {
-      pendingRef.current = v;
+    if (v !== lastReportedRef.current) {
+      lastReportedRef.current = v;
       onSelect(v);
     }
   };
 
   return (
-    <View style={{ height: ITEM_HEIGHT * 3, width: 70, overflow: 'hidden' }}>
+    <View
+      style={{ height: LIST_HEIGHT, width: 80, overflow: 'hidden' }}
+    >
       <View
         pointerEvents="none"
         style={{
           position: 'absolute',
-          top: ITEM_HEIGHT,
+          top: ITEM_HEIGHT * 2,
           left: 0,
           right: 0,
           height: ITEM_HEIGHT,
           borderTopWidth: 1,
           borderBottomWidth: 1,
-          borderColor: 'rgba(37,99,235,0.25)',
-          backgroundColor: 'rgba(37,99,235,0.06)',
+          borderColor: 'rgba(37,99,235,0.3)',
+          backgroundColor: 'rgba(37,99,235,0.08)',
           zIndex: 1,
         }}
       />
@@ -85,6 +116,7 @@ function WheelColumn({
         keyExtractor={(v) => String(v)}
         showsVerticalScrollIndicator={false}
         snapToInterval={ITEM_HEIGHT}
+        snapToAlignment="start"
         decelerationRate="fast"
         getItemLayout={(_, index) => ({
           length: ITEM_HEIGHT,
@@ -92,27 +124,32 @@ function WheelColumn({
           index,
         })}
         initialScrollIndex={initialIndex}
-        onMomentumScrollEnd={onMomentumEnd}
-        contentContainerStyle={{ paddingVertical: ITEM_HEIGHT }}
-        renderItem={({ item }) => (
-          <View
-            style={{
-              height: ITEM_HEIGHT,
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            <Text
-              className={`text-xl ${
-                item === selected
-                  ? 'font-bold text-foreground'
-                  : 'font-medium text-muted-foreground/50'
-              }`}
+        onScrollBeginDrag={onScrollBegin}
+        onMomentumScrollEnd={handleScrollEnd}
+        onScrollEndDrag={handleScrollEnd}
+        contentContainerStyle={{ paddingVertical: ITEM_HEIGHT * 2 }}
+        renderItem={({ item }) => {
+          const active = item === selected;
+          return (
+            <View
+              style={{
+                height: ITEM_HEIGHT,
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
             >
-              {item.toString().padStart(pad, '0')}
-            </Text>
-          </View>
-        )}
+              <Text
+                className={`${
+                  active
+                    ? 'text-2xl font-bold text-foreground'
+                    : 'text-xl font-medium text-muted-foreground/50'
+                }`}
+              >
+                {item.toString().padStart(pad, '0')}
+              </Text>
+            </View>
+          );
+        }}
       />
     </View>
   );
@@ -244,10 +281,16 @@ export function TimePickerModal({
           </Text>
 
           {/* Wheel pickers */}
-          <View className="mt-2 flex-row items-center justify-center gap-2">
-            <WheelColumn values={hours} selected={value.getHours()} onSelect={setHour} />
+          <View className="mt-2 flex-row items-center justify-center gap-3">
+            <WheelColumn
+              key="hours"
+              values={hours}
+              selected={value.getHours()}
+              onSelect={setHour}
+            />
             <Text className="text-3xl font-bold text-foreground">:</Text>
             <WheelColumn
+              key="minutes"
               values={minutes}
               selected={value.getMinutes()}
               onSelect={setMinute}
@@ -255,16 +298,18 @@ export function TimePickerModal({
           </View>
 
           {/* +/- 5 minute buttons */}
-          <View className="mx-4 mt-3 flex-row items-center justify-center gap-3">
+          <View className="mx-4 mt-4 flex-row items-center justify-center gap-3">
             <Pressable
               onPress={() => bumpMinutes(-5)}
-              className="h-10 w-14 items-center justify-center rounded-full bg-muted active:bg-muted/70"
+              hitSlop={8}
+              className="h-11 flex-1 items-center justify-center rounded-full bg-muted active:bg-muted/70"
             >
               <Text className="text-sm font-bold text-foreground">−5 мин</Text>
             </Pressable>
             <Pressable
               onPress={() => bumpMinutes(5)}
-              className="h-10 w-14 items-center justify-center rounded-full bg-muted active:bg-muted/70"
+              hitSlop={8}
+              className="h-11 flex-1 items-center justify-center rounded-full bg-muted active:bg-muted/70"
             >
               <Text className="text-sm font-bold text-foreground">+5 мин</Text>
             </Pressable>
@@ -300,7 +345,7 @@ export function formatTimePickerLabel(d: Date): string {
     d.getMonth() === tomorrow.getMonth() &&
     d.getFullYear() === tomorrow.getFullYear();
   if (isTomorrow) return `Завтра, ${hh}:${mm}`;
-  const dd = d.getDate().toString().padStart(2, '0');
-  const mo = (d.getMonth() + 1).toString().padStart(2, '0');
-  return `${dd}.${mo}, ${hh}:${mm}`;
+  const day = d.getDate().toString().padStart(2, '0');
+  const mon = (d.getMonth() + 1).toString().padStart(2, '0');
+  return `${day}.${mon}, ${hh}:${mm}`;
 }

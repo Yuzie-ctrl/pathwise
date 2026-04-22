@@ -10,10 +10,12 @@ import {
   Bus,
   Car,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   Clock,
   Filter,
   Footprints,
+  MapPin,
   Pause,
   Plus,
   X,
@@ -56,7 +58,9 @@ interface TransitPlannerProps {
   onChangeOrigin: () => void;
   onDrawForStop?: (stopId: string) => void;
   /** Called when user picks a specific option to visualize on the map. */
-  onSelectOption?: (option: TransitOption) => void;
+  onSelectOption?: (option: TransitOption | null) => void;
+  /** Zoom the map to a specific segment of the current transit option. */
+  onZoomToSegment?: (segmentIndex: number) => void;
 }
 
 function formatHHMM(d: Date) {
@@ -71,6 +75,7 @@ export function TransitPlanner({
   onChangeOrigin,
   onDrawForStop,
   onSelectOption,
+  onZoomToSegment,
 }: TransitPlannerProps) {
   const stops = useTripStore((s) => s.stops);
   const mode = useTripStore((s) => s.mode);
@@ -89,7 +94,7 @@ export function TransitPlanner({
   const [filterOpen, setFilterOpen] = useState(false);
   const [selectedLines, setSelectedLines] = useState<string[]>([]);
   const [detailOption, setDetailOption] = useState<TransitOption | null>(null);
-  /** Detail sheet vertical position: compact (bottom half), expanded (near top), or collapsed (peek). */
+  /** Detail sheet vertical position. */
   const [detailPos, setDetailPos] = useState<'compact' | 'expanded' | 'collapsed'>(
     'compact',
   );
@@ -129,6 +134,48 @@ export function TransitPlanner({
   };
 
   const visibleStops = stopsCollapsed ? stops.slice(0, 1) : stops;
+
+  const closeDetail = () => {
+    setDetailOption(null);
+    setDetailPos('compact');
+    onSelectOption?.(null);
+  };
+
+  // ---------------------------------------------------------------------
+  // Detail-only mode: when a user picks a transit option, the planner
+  // shell (mode chips, time row, stops list, filter, options list) is
+  // completely hidden — only the half-screen detail sheet remains on
+  // top of the map.
+  // ---------------------------------------------------------------------
+  if (detailOption) {
+    return (
+      <View className="absolute inset-0 z-40" pointerEvents="box-none">
+        <DetailSheet
+          option={detailOption}
+          origin={originLabel}
+          destination={destLabel}
+          departureAt={selectedDate}
+          position={detailPos}
+          onTogglePosition={() =>
+            setDetailPos((p) =>
+              p === 'collapsed'
+                ? 'compact'
+                : p === 'compact'
+                  ? 'expanded'
+                  : 'collapsed',
+            )
+          }
+          onSelectPosition={setDetailPos}
+          onClose={closeDetail}
+          onZoomToSegment={(idx) => {
+            setDetailPos('collapsed');
+            onZoomToSegment?.(idx);
+          }}
+          totalDistance={distanceMeters}
+        />
+      </View>
+    );
+  }
 
   return (
     <View className="absolute inset-0 z-40 bg-background">
@@ -481,70 +528,6 @@ export function TransitPlanner({
           setDwellPickerStopId(null);
         }}
       />
-
-      {/* Detail sheet — half-screen bottom, can be expanded up or collapsed to peek.
-          Map remains visible in the other half. No black overlay so user can see route. */}
-      {detailOption ? (
-        <View
-          pointerEvents="box-none"
-          style={{
-            position: 'absolute',
-            left: 0,
-            right: 0,
-            bottom: 0,
-            top:
-              detailPos === 'expanded'
-                ? 60
-                : detailPos === 'compact'
-                  ? '50%'
-                  : '82%',
-          }}
-          className="overflow-hidden rounded-t-3xl bg-card"
-        >
-          <Pressable
-            onPress={() =>
-              setDetailPos((p) =>
-                p === 'collapsed' ? 'compact' : p === 'compact' ? 'expanded' : 'collapsed',
-              )
-            }
-            className="items-center py-2"
-            hitSlop={10}
-          >
-            <View className="h-1.5 w-12 rounded-full bg-muted-foreground/40" />
-          </Pressable>
-          <View className="border-b border-border px-4 pb-3">
-            <View className="flex-row items-center justify-between">
-              <Text className="text-lg font-bold text-foreground">
-                {formatDuration(detailOption.durationSeconds)}
-              </Text>
-              <Pressable
-                onPress={() => setDetailOption(null)}
-                hitSlop={8}
-                className="h-7 w-7 items-center justify-center rounded-full bg-muted"
-              >
-                <X size={14} color="#666" />
-              </Pressable>
-            </View>
-            <Text className="text-xs text-muted-foreground" numberOfLines={1}>
-              {detailOption.description} · {formatDistance(distanceMeters)} · отпр. через{' '}
-              {detailOption.departureInMinutes} мин
-            </Text>
-          </View>
-          {detailPos !== 'collapsed' ? (
-            <ScrollView
-              contentContainerStyle={{ padding: 16, paddingBottom: 24 }}
-              showsVerticalScrollIndicator={false}
-            >
-              <TimelineView
-                option={detailOption}
-                origin={originLabel}
-                destination={destLabel}
-                departureAt={selectedDate}
-              />
-            </ScrollView>
-          ) : null}
-        </View>
-      ) : null}
     </View>
   );
 }
@@ -574,9 +557,12 @@ function SegmentChip({
   }
   return (
     <View className="flex-row items-center gap-1">
-      <View className="rounded-md bg-primary px-1.5 py-0.5">
-        <Text className="text-[10px] font-bold text-primary-foreground">
-          {segment.line ?? 'BUS'}
+      <View
+        className="rounded-md px-1.5 py-0.5"
+        style={{ backgroundColor: '#dc2626' }}
+      >
+        <Text className="text-[10px] font-bold text-white">
+          {stripNumPrefix(segment.line ?? 'BUS')}
         </Text>
       </View>
       {!isLast ? <Text className="text-muted-foreground">›</Text> : null}
@@ -584,130 +570,498 @@ function SegmentChip({
   );
 }
 
-function TimelineView({
+function stripNumPrefix(s: string): string {
+  return s.replace(/^№\s*/, '');
+}
+
+// ---------------------------------------------------------------------
+// Detail sheet — Google-Maps-style timeline
+// ---------------------------------------------------------------------
+
+interface DetailSheetProps {
+  option: TransitOption;
+  origin: string;
+  destination: string;
+  departureAt: Date;
+  position: 'compact' | 'expanded' | 'collapsed';
+  onTogglePosition: () => void;
+  onSelectPosition: (p: 'compact' | 'expanded' | 'collapsed') => void;
+  onClose: () => void;
+  onZoomToSegment: (segmentIndex: number) => void;
+  totalDistance: number;
+}
+
+function DetailSheet({
   option,
   origin,
   destination,
   departureAt,
+  position,
+  onTogglePosition,
+  onSelectPosition: _onSelectPosition,
+  onClose,
+  onZoomToSegment,
+  totalDistance: _totalDistance,
+}: DetailSheetProps) {
+  const topOffset =
+    position === 'expanded' ? 60 : position === 'compact' ? '50%' : '85%';
+
+  // Bus-line pill summary at top (7 › 49 › 8 › walker-minutes) like screenshot
+  const pillSummary: { line: string; walk?: number }[] = [];
+  let trailingWalkMin = 0;
+  for (const seg of option.segments) {
+    if (seg.kind === 'walk') {
+      trailingWalkMin += Math.max(1, Math.round(seg.durationSeconds / 60));
+    } else {
+      pillSummary.push({ line: stripNumPrefix(seg.line ?? 'BUS') });
+    }
+  }
+
+  return (
+    <View
+      pointerEvents="box-none"
+      style={{
+        position: 'absolute',
+        left: 0,
+        right: 0,
+        bottom: 0,
+        top: topOffset,
+      }}
+      className="overflow-hidden rounded-t-3xl bg-card"
+    >
+      {/* Grabber */}
+      <Pressable onPress={onTogglePosition} className="items-center py-2" hitSlop={10}>
+        <View className="h-1.5 w-12 rounded-full bg-muted-foreground/40" />
+      </Pressable>
+
+      {/* Top header row — bus pill chain + walker minutes + close */}
+      <View className="flex-row items-center gap-2 border-b border-border px-4 pb-3">
+        <View className="flex-1 flex-row flex-wrap items-center gap-1">
+          {pillSummary.map((p, i) => (
+            <View key={i} className="flex-row items-center gap-1">
+              <View className="flex-row items-center gap-1 rounded-md bg-muted px-1.5 py-0.5">
+                <Bus size={11} color="#666" />
+                <View
+                  className="rounded-sm px-1.5 py-0.5"
+                  style={{ backgroundColor: '#dc2626' }}
+                >
+                  <Text className="text-[11px] font-bold text-white">{p.line}</Text>
+                </View>
+              </View>
+              {i < pillSummary.length - 1 ? (
+                <ChevronRight size={12} color="#888" />
+              ) : null}
+            </View>
+          ))}
+          {trailingWalkMin > 0 ? (
+            <>
+              <ChevronRight size={12} color="#888" />
+              <View className="flex-row items-center gap-0.5">
+                <Footprints size={12} color="#666" />
+                <Text className="text-[11px] font-semibold text-foreground">
+                  {trailingWalkMin}
+                </Text>
+              </View>
+            </>
+          ) : null}
+        </View>
+        <Pressable
+          onPress={onClose}
+          hitSlop={8}
+          className="h-8 w-8 items-center justify-center rounded-full bg-muted active:bg-muted/70"
+        >
+          <X size={16} color="#666" />
+        </Pressable>
+      </View>
+
+      {position !== 'collapsed' ? (
+        <ScrollView
+          contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 16, paddingBottom: 32 }}
+          showsVerticalScrollIndicator={false}
+        >
+          <Timeline
+            option={option}
+            origin={origin}
+            destination={destination}
+            departureAt={departureAt}
+            onZoomToSegment={onZoomToSegment}
+          />
+        </ScrollView>
+      ) : null}
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------
+// Timeline — Google-Maps-style
+// ---------------------------------------------------------------------
+
+const RAIL_COLOR = '#dc2626'; // red bus rail (like screenshot)
+const WALK_COLOR = '#9ca3af'; // gray for walk dots
+
+/** Height of each row type in the timeline, in px — used for connector rail. */
+const _ROW_H_STOP = 54;
+const _ROW_H_WALK = 52;
+const _ROW_H_BUS = 110;
+
+function Timeline({
+  option,
+  origin,
+  destination,
+  departureAt,
+  onZoomToSegment,
 }: {
   option: TransitOption;
   origin: string;
   destination: string;
   departureAt: Date;
+  onZoomToSegment: (segmentIndex: number) => void;
 }) {
-  // Detect consecutive bus segments at same transfer point (Пересадка) — show as paired boxes.
-  const rows: React.ReactNode[] = [];
-  let elapsed = 0; // seconds accumulated up to the current row
-  const at = (sec: number) => {
+  // Times: we accumulate elapsed seconds from `departureAt` to render HH:MM next to each stop/location.
+  const segs = option.segments;
+
+  // Precompute time-at-each-segment start
+  const elapsedAt: number[] = [];
+  let acc = 0;
+  for (const s of segs) {
+    elapsedAt.push(acc);
+    acc += s.durationSeconds;
+  }
+  const totalElapsed = acc;
+
+  const time = (sec: number) => {
     const d = new Date(departureAt.getTime() + sec * 1000);
     return formatHHMM(d);
   };
-  for (let i = 0; i < option.segments.length; i++) {
-    const seg = option.segments[i];
-    const next = option.segments[i + 1];
-    const isBusTransfer =
-      seg.kind === 'bus' && next && next.kind === 'bus' && seg.to === next.from;
 
-    const locLabel = i === 0 ? origin : seg.from;
-    rows.push(
-      <View key={`loc-${i}`} className="flex-row items-center gap-3">
-        <View className="h-3 w-3 rounded-full border-2 border-primary bg-card" />
-        <Text className="flex-1 text-sm font-semibold text-foreground" numberOfLines={1}>
-          {locLabel}
-        </Text>
-        <Text className="text-[11px] text-muted-foreground">{at(elapsed)}</Text>
-      </View>,
-    );
+  const rows: React.ReactNode[] = [];
 
-    if (isBusTransfer) {
+  for (let i = 0; i < segs.length; i++) {
+    const seg = segs[i];
+    const elapsed = elapsedAt[i];
+    const next = segs[i + 1];
+    const prev = segs[i - 1];
+
+    // At the beginning OR whenever previous segment is a walk and current is bus,
+    // emit a "location" row — a named place with time on the right.
+    if (i === 0) {
       rows.push(
-        <View
-          key={`seg-transfer-${i}`}
-          className="ml-1 flex-row items-center gap-2 border-l-2 border-dashed border-muted-foreground/40 pl-5 py-2"
-        >
-          <View className="flex-row items-center gap-2">
-            <View className="rounded-md bg-primary px-2 py-1">
-              <Text className="text-xs font-bold text-primary-foreground">{seg.line}</Text>
-            </View>
-            <ArrowLeftRight size={14} color="#8b5cf6" />
-            <View className="rounded-md bg-primary px-2 py-1">
-              <Text className="text-xs font-bold text-primary-foreground">
-                {next.line}
-              </Text>
-            </View>
-          </View>
-          <View className="flex-1">
-            <Text className="text-xs font-medium text-foreground">
-              Пересадка на той же остановке
-            </Text>
-            <Text className="text-[10px] text-muted-foreground">
-              {seg.line} → {next.line}
-            </Text>
-          </View>
-        </View>,
+        <LocationRow
+          key={`loc-start`}
+          label={origin}
+          subLabel={undefined}
+          time={time(elapsed)}
+          markerColor={RAIL_COLOR}
+          filled={false}
+        />,
       );
-      rows.push(
-        <View key={`seg-${i}-info`} className="ml-1 border-l-2 border-primary pl-5 py-2">
-          <Text className="text-xs text-muted-foreground">
-            {seg.line} · {seg.stopsCount ?? '—'} ост. · {formatDuration(seg.durationSeconds)}
-          </Text>
-        </View>,
-      );
-      elapsed += seg.durationSeconds;
-      i++;
-      rows.push(
-        <View key={`seg-${i}-info2`} className="ml-1 border-l-2 border-primary pl-5 py-2">
-          <Text className="text-xs text-muted-foreground">
-            {next.line} · {next.stopsCount ?? '—'} ост. · {formatDuration(next.durationSeconds)}
-          </Text>
-        </View>,
-      );
-      elapsed += next.durationSeconds;
-      continue;
     }
 
     if (seg.kind === 'walk') {
       rows.push(
-        <View
-          key={`seg-${i}`}
-          className="ml-1 flex-row items-center gap-2 border-l-2 border-dashed border-emerald-500/40 pl-5 py-2"
-        >
-          <Footprints size={14} color="#059669" />
-          <Text className="text-xs text-foreground">
-            Пешком · {formatDuration(seg.durationSeconds)}
-            {seg.distanceMeters > 0 ? ` · ${formatDistance(seg.distanceMeters)}` : ''}
-          </Text>
-        </View>,
+        <WalkRow
+          key={`walk-${i}`}
+          durationSec={seg.durationSeconds}
+          distanceM={seg.distanceMeters}
+          onPress={() => onZoomToSegment(i)}
+        />,
       );
     } else {
+      // Detect consecutive bus segments at a shared transfer stop.
+      const isTransferNext =
+        next && next.kind === 'bus' && next.from === seg.to && seg.to === next.from;
+
+      // Bus arrives at "seg.to" — after the bus ride, render a stop marker
+      // labelled with `seg.to` (unless the very next segment continues at
+      // the same transfer). We render the bus block now.
       rows.push(
-        <View
-          key={`seg-${i}`}
-          className="ml-1 flex-row items-center gap-2 border-l-2 border-primary pl-5 py-2"
-        >
-          <Bus size={14} color="#8b5cf6" />
-          <View className="rounded-md bg-primary px-1.5 py-0.5">
-            <Text className="text-xs font-bold text-primary-foreground">{seg.line}</Text>
-          </View>
-          <Text className="text-xs text-foreground">
-            {seg.stopsCount ?? '—'} ост. · {formatDuration(seg.durationSeconds)}
-          </Text>
-        </View>,
+        <BusRow
+          key={`bus-${i}`}
+          line={stripNumPrefix(seg.line ?? 'BUS')}
+          fromLabel={seg.from}
+          toLabel={seg.to}
+          stopsCount={seg.stopsCount ?? 0}
+          durationSec={seg.durationSeconds}
+          startTime={time(elapsed)}
+          endTime={time(elapsed + seg.durationSeconds)}
+          isFirst={i === 0 || (prev && prev.kind === 'walk' && i === 1)}
+          isTransferAfter={!!isTransferNext}
+          onPress={() => onZoomToSegment(i)}
+        />,
       );
+
+      if (isTransferNext && next) {
+        // Emit a compact "transfer" row with paired line badges.
+        rows.push(
+          <TransferRow
+            key={`xfer-${i}`}
+            fromLine={stripNumPrefix(seg.line ?? 'BUS')}
+            toLine={stripNumPrefix(next.line ?? 'BUS')}
+            location={seg.to}
+            time={time(elapsed + seg.durationSeconds)}
+          />,
+        );
+        // Skip next iteration's "emit start location" logic because we've
+        // already rendered the shared location.
+      } else {
+        // Ordinary bus end -> next location.
+        // If the NEXT segment is a walk that goes towards the destination,
+        // show the bus arrival stop as a location row.
+        if (next) {
+          rows.push(
+            <LocationRow
+              key={`loc-after-bus-${i}`}
+              label={seg.to}
+              subLabel={undefined}
+              time={time(elapsed + seg.durationSeconds)}
+              markerColor={RAIL_COLOR}
+              filled={false}
+            />,
+          );
+        }
+      }
     }
-    elapsed += seg.durationSeconds;
+
+    // If previous was a bus that ended, and current (walk) started from a location,
+    // the walk row above already handled it; no extra location needed.
   }
 
-  // Final destination marker
+  // Final pin — destination
   rows.push(
-    <View key="final" className="flex-row items-center gap-3">
-      <View className="h-3 w-3 rounded-full bg-primary" />
-      <Text className="flex-1 text-sm font-semibold text-foreground" numberOfLines={1}>
-        {destination}
-      </Text>
-      <Text className="text-[11px] text-muted-foreground">{at(elapsed)}</Text>
+    <View key="final" className="flex-row items-start">
+      <View style={{ width: 28, alignItems: 'center' }}>
+        <MapPin size={20} color="#dc2626" fill="#dc2626" />
+      </View>
+      <View className="flex-1 pb-3">
+        <Text className="text-base font-semibold text-foreground" numberOfLines={1}>
+          {destination}
+        </Text>
+      </View>
+      <Text className="text-sm font-semibold text-foreground">{time(totalElapsed)}</Text>
     </View>,
   );
 
-  return <View className="gap-1">{rows}</View>;
+  return <View>{rows}</View>;
+}
+
+// ----- Row components -----
+
+function LocationRow({
+  label,
+  subLabel,
+  time,
+  markerColor,
+  filled: _filled,
+}: {
+  label: string;
+  subLabel?: string;
+  time: string;
+  markerColor: string;
+  filled?: boolean;
+}) {
+  return (
+    <View className="flex-row items-start">
+      {/* Rail column */}
+      <View style={{ width: 28, alignItems: 'center' }}>
+        <View
+          style={{
+            width: 14,
+            height: 14,
+            borderRadius: 7,
+            backgroundColor: '#fff',
+            borderWidth: 3,
+            borderColor: markerColor,
+            marginTop: 4,
+          }}
+        />
+      </View>
+      <View className="flex-1 pb-3">
+        <View className="flex-row items-start justify-between">
+          <Text
+            className="flex-1 text-base font-semibold text-foreground"
+            numberOfLines={1}
+          >
+            {label}
+          </Text>
+          <Text className="ml-2 text-sm font-semibold text-foreground">{time}</Text>
+        </View>
+        {subLabel ? (
+          <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+            {subLabel}
+          </Text>
+        ) : null}
+      </View>
+    </View>
+  );
+}
+
+function WalkRow({
+  durationSec,
+  distanceM,
+  onPress,
+}: {
+  durationSec: number;
+  distanceM: number;
+  onPress: () => void;
+}) {
+  const minutes = Math.max(1, Math.round(durationSec / 60));
+  return (
+    <View className="flex-row">
+      {/* Rail column: 4 gray dots like screenshot */}
+      <View style={{ width: 28, alignItems: 'center', paddingVertical: 8 }}>
+        {[0, 1, 2, 3].map((i) => (
+          <View
+            key={i}
+            style={{
+              width: 4,
+              height: 4,
+              borderRadius: 2,
+              backgroundColor: WALK_COLOR,
+              marginVertical: 2,
+            }}
+          />
+        ))}
+      </View>
+      <Pressable
+        onPress={onPress}
+        className="flex-1 flex-row items-center justify-between py-2 pr-2 active:bg-muted/30"
+      >
+        <View className="flex-row items-center gap-3">
+          <Footprints size={18} color="#666" />
+          <Text className="text-sm text-foreground">
+            Пешком {minutes} мин. ({formatDistance(distanceM)})
+          </Text>
+        </View>
+        <ChevronRight size={18} color="#999" />
+      </Pressable>
+    </View>
+  );
+}
+
+function BusRow({
+  line,
+  fromLabel: _fromLabel,
+  toLabel: _toLabel,
+  stopsCount,
+  durationSec,
+  startTime: _startTime,
+  endTime: _endTime,
+  isFirst: _isFirst,
+  isTransferAfter: _isTransferAfter,
+  onPress,
+}: {
+  line: string;
+  fromLabel: string;
+  toLabel: string;
+  stopsCount: number;
+  durationSec: number;
+  startTime: string;
+  endTime: string;
+  isFirst: boolean;
+  isTransferAfter: boolean;
+  onPress: () => void;
+}) {
+  const minutes = Math.max(1, Math.round(durationSec / 60));
+  return (
+    <View className="flex-row">
+      {/* Solid red rail column */}
+      <View style={{ width: 28, alignItems: 'center' }}>
+        <View
+          style={{
+            width: 8,
+            backgroundColor: RAIL_COLOR,
+            alignSelf: 'center',
+            flex: 1,
+            borderRadius: 4,
+            marginVertical: 2,
+          }}
+        />
+      </View>
+      <Pressable
+        onPress={onPress}
+        className="flex-1 py-3 pr-2 active:bg-muted/30"
+      >
+        {/* Bus line + destination */}
+        <View className="flex-row items-center gap-2">
+          <View
+            className="rounded-md px-2 py-1"
+            style={{ backgroundColor: RAIL_COLOR }}
+          >
+            <Text className="text-sm font-bold text-white">{line}</Text>
+          </View>
+          <Bus size={16} color="#111" />
+          <Text className="flex-1 text-sm font-semibold text-foreground" numberOfLines={1}>
+            Маршрут {line}
+          </Text>
+          <ChevronRight size={18} color="#999" />
+        </View>
+        {/* Info row */}
+        <View className="mt-2 flex-row items-center gap-1 pl-1">
+          <ChevronDown size={14} color="#777" />
+          <Text className="text-xs text-muted-foreground">
+            Сколько ехать: {stopsCount > 0 ? `${stopsCount} ост. ` : ''}({minutes} мин.)
+          </Text>
+        </View>
+      </Pressable>
+    </View>
+  );
+}
+
+function TransferRow({
+  fromLine,
+  toLine,
+  location,
+  time,
+}: {
+  fromLine: string;
+  toLine: string;
+  location: string;
+  time: string;
+}) {
+  return (
+    <View className="flex-row items-start">
+      <View style={{ width: 28, alignItems: 'center' }}>
+        <View
+          style={{
+            width: 14,
+            height: 14,
+            borderRadius: 7,
+            backgroundColor: '#fff',
+            borderWidth: 3,
+            borderColor: RAIL_COLOR,
+            marginTop: 4,
+          }}
+        />
+      </View>
+      <View className="flex-1 pb-3">
+        <View className="flex-row items-start justify-between">
+          <Text
+            className="flex-1 text-base font-semibold text-foreground"
+            numberOfLines={1}
+          >
+            {location}
+          </Text>
+          <Text className="ml-2 text-sm font-semibold text-foreground">{time}</Text>
+        </View>
+        <View className="mt-1 flex-row items-center gap-2">
+          <View
+            className="rounded-md px-1.5 py-0.5"
+            style={{ backgroundColor: RAIL_COLOR }}
+          >
+            <Text className="text-xs font-bold text-white">{fromLine}</Text>
+          </View>
+          <ArrowLeftRight size={14} color="#888" />
+          <View
+            className="rounded-md px-1.5 py-0.5"
+            style={{ backgroundColor: RAIL_COLOR }}
+          >
+            <Text className="text-xs font-bold text-white">{toLine}</Text>
+          </View>
+          <Text className="text-[11px] text-muted-foreground">
+            Пересадка на той же остановке
+          </Text>
+        </View>
+      </View>
+    </View>
+  );
 }

@@ -20,6 +20,7 @@ import {
   matchDrawnRoute,
   midpointOfLine,
   type GeocodeResult,
+  type TransitOption,
 } from '@/lib/routing';
 import { useTripStore, type TransportMode } from '@/lib/stores/tripStore';
 
@@ -82,6 +83,9 @@ export default function Home() {
   /** When non-null, the current drawing session is for a partial override
    *  targeting the leg ending at this stop id (pre+draw+post get stitched). */
   const [drawTargetStopId, setDrawTargetStopId] = useState<string | null>(null);
+  /** Currently selected transit variant (when user taps a bus option). */
+  const [selectedTransitOption, setSelectedTransitOption] =
+    useState<TransitOption | null>(null);
 
   const routeReqRef = useRef(0);
 
@@ -220,6 +224,9 @@ export default function Home() {
     // When any drawn override exists, don't auto-fit — the user just drew
     // it and any camera change would visually reflow/shift the view.
     if (drawnRoutes.length > 0) return;
+    // When a transit option is selected, the user may pan/zoom to specific
+    // segments — don't steal the camera.
+    if (selectedTransitOption) return;
     const valid = stops.filter((s) => s.latitude !== 0 || s.longitude !== 0);
     if (valid.length < 2) return;
     const lats = valid.map((s) => s.latitude);
@@ -236,10 +243,15 @@ export default function Home() {
       latitudeDelta: latDelta,
       longitudeDelta: lonDelta,
     });
-  }, [stops, navigating, drawnRoutes]);
+  }, [stops, navigating, drawnRoutes, selectedTransitOption]);
 
-  // ---------------------------------------------------------------------
-  // Derived map data
+  // Clear selected transit option whenever mode leaves transit.
+  useEffect(() => {
+    if (mode !== 'transit' && selectedTransitOption) {
+      setSelectedTransitOption(null);
+    }
+  }, [mode, selectedTransitOption]);
+
   // ---------------------------------------------------------------------
   const style = MODE_STYLE[mode];
 
@@ -421,6 +433,7 @@ export default function Home() {
     clearStops();
     setNavigating(false);
     setPlannerCollapsed(false);
+    setSelectedTransitOption(null);
   };
 
   const handleStartTrip = () => {
@@ -529,6 +542,84 @@ export default function Home() {
     setDrawing(false);
     setDrawTargetStopId(null);
   };
+
+  const handleSelectTransitOption = useCallback((opt: TransitOption | null) => {
+    setSelectedTransitOption(opt);
+  }, []);
+
+  /**
+   * Zoom the map to a specific segment of the currently-selected transit
+   * option. Since transit segments are synthesized from a single car-profile
+   * polyline, we slice the overall route coordinates proportionally to the
+   * cumulative distance share of each option segment up to `segmentIndex`.
+   */
+  const handleZoomToSegment = useCallback(
+    (segmentIndex: number) => {
+      const opt = selectedTransitOption;
+      if (!opt) return;
+      if (legs.length === 0) return;
+      // Flatten all coords of the primary leg (transit has a single logical leg).
+      const all: { latitude: number; longitude: number }[] = [];
+      for (const l of legs) all.push(...l.coordinates);
+      if (all.length < 2) return;
+      // Cumulative arc length
+      const cum: number[] = [0];
+      for (let i = 1; i < all.length; i++) {
+        const a = all[i - 1];
+        const b = all[i];
+        const dLat = b.latitude - a.latitude;
+        const dLon = b.longitude - a.longitude;
+        cum.push(cum[i - 1] + Math.sqrt(dLat * dLat + dLon * dLon));
+      }
+      const total = cum[cum.length - 1] || 1;
+      // Ratio share per option.segment (by distanceMeters)
+      const totalSegDist = opt.segments.reduce(
+        (sum, s) => sum + Math.max(1, s.distanceMeters),
+        0,
+      );
+      let startRatio = 0;
+      for (let i = 0; i < segmentIndex; i++) {
+        startRatio += Math.max(1, opt.segments[i].distanceMeters) / totalSegDist;
+      }
+      const endRatio =
+        startRatio +
+        Math.max(1, opt.segments[segmentIndex].distanceMeters) / totalSegDist;
+      const startDist = total * startRatio;
+      const endDist = total * endRatio;
+      // Find coord range matching those cumulative distances
+      let startIdx = 0;
+      let endIdx = all.length - 1;
+      for (let i = 0; i < cum.length; i++) {
+        if (cum[i] >= startDist) {
+          startIdx = Math.max(0, i - 1);
+          break;
+        }
+      }
+      for (let i = startIdx; i < cum.length; i++) {
+        if (cum[i] >= endDist) {
+          endIdx = i;
+          break;
+        }
+      }
+      const slice = all.slice(startIdx, Math.max(endIdx + 1, startIdx + 2));
+      if (slice.length < 2) return;
+      const lats = slice.map((c) => c.latitude);
+      const lons = slice.map((c) => c.longitude);
+      const minLat = Math.min(...lats);
+      const maxLat = Math.max(...lats);
+      const minLon = Math.min(...lons);
+      const maxLon = Math.max(...lons);
+      const latDelta = Math.max(0.006, (maxLat - minLat) * 1.8);
+      const lonDelta = Math.max(0.006, (maxLon - minLon) * 1.8);
+      setRegion({
+        latitude: (minLat + maxLat) / 2,
+        longitude: (minLon + maxLon) / 2,
+        latitudeDelta: latDelta,
+        longitudeDelta: lonDelta,
+      });
+    },
+    [selectedTransitOption, legs],
+  );
 
   const handleUserLocationUpdate = useCallback(
     (coord: { latitude: number; longitude: number }) => {
@@ -674,6 +765,8 @@ export default function Home() {
           onAddStop={openStopSearch}
           onChangeOrigin={openOriginSearch}
           onDrawForStop={handleDrawForStop}
+          onSelectOption={handleSelectTransitOption}
+          onZoomToSegment={handleZoomToSegment}
         />
       ) : null}
 

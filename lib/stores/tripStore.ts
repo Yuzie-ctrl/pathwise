@@ -190,7 +190,15 @@ export const useTripStore = create<TripState>()(
           const idx = state.stops.findIndex((s) => s.id === id);
           if (idx === -1) return state;
           if (idx === 0) return state;
-          return { stops: state.stops.filter((s) => s.id !== id) };
+          const next = state.stops.filter((s) => s.id !== id);
+          // If the only remaining stop is a "myLocation" origin, the user
+          // effectively has no trip planned — wipe everything so the UI
+          // returns to the empty-map / top-search-bar state instead of
+          // leaving the user stuck on a blank map with a dangling origin.
+          if (next.length === 1 && next[0].originKind === 'myLocation') {
+            return { stops: [], legs: [], drawnRoutes: [] };
+          }
+          return { stops: next };
         }),
 
       replaceStop: (id, next) =>
