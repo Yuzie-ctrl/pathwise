@@ -61,6 +61,8 @@ interface RoutePlannerProps {
   onAddStop?: () => void;
   /** Open drawing overlay to sketch a partial route to a given stop. */
   onDrawForStop?: (stopId: string) => void;
+  /** Re-open search to replace an existing stop (idx>=1). */
+  onEditStop?: (stopId: string) => void;
 }
 
 export function RoutePlanner({
@@ -71,6 +73,7 @@ export function RoutePlanner({
   onChangeOrigin,
   onAddStop,
   onDrawForStop,
+  onEditStop,
 }: RoutePlannerProps) {
   const stops = useTripStore((s) => s.stops);
   const mode = useTripStore((s) => s.mode);
@@ -309,7 +312,11 @@ export function RoutePlanner({
                     {isOrigin ? (
                       <Pressable
                         onPress={onChangeOrigin}
-                        className="flex-1 flex-row items-center gap-2 rounded-lg bg-muted/50 px-2 py-1.5 active:bg-muted"
+                        className={`flex-1 flex-row items-center gap-2 rounded-lg px-2 py-1.5 active:bg-muted ${
+                          stop.originKind === 'myLocation'
+                            ? 'bg-muted/50'
+                            : ''
+                        }`}
                       >
                         <View className="flex-1">
                           <Text
@@ -326,7 +333,12 @@ export function RoutePlanner({
                         </View>
                       </Pressable>
                     ) : (
-                      <View className="flex-1 flex-row items-center gap-2">
+                      <Pressable
+                        onPress={
+                          onEditStop ? () => onEditStop(stop.id) : undefined
+                        }
+                        className="flex-1 flex-row items-center gap-2 rounded-lg px-2 py-1.5 active:bg-muted"
+                      >
                         <View className="flex-1">
                           <Text
                             className="text-sm text-foreground"
@@ -346,7 +358,7 @@ export function RoutePlanner({
                             </View>
                           ) : null}
                         </View>
-                      </View>
+                      </Pressable>
                     )}
 
                     {/* Draw-route-to-this-stop button */}
@@ -370,7 +382,7 @@ export function RoutePlanner({
                       <Pressable
                         onPress={() => setDwellPickerStopId(stop.id)}
                         hitSlop={6}
-                        className={`flex-row items-center gap-1 rounded-full px-2.5 py-1.5 ${
+                        className={`items-center justify-center rounded-full p-2 ${
                           stop.dwellMinutes > 0 ? 'bg-primary/10' : 'bg-muted'
                         }`}
                       >
@@ -378,11 +390,6 @@ export function RoutePlanner({
                           size={14}
                           color={stop.dwellMinutes > 0 ? '#2563eb' : '#666'}
                         />
-                        {stop.dwellMinutes === 0 ? (
-                          <Text className="text-xs font-medium text-foreground">
-                            Пауза
-                          </Text>
-                        ) : null}
                       </Pressable>
                     ) : null}
 
@@ -408,7 +415,9 @@ export function RoutePlanner({
                       </View>
                     ) : null}
 
-                    {!isOrigin ? (
+                    {/* Remove — only from the 3rd stop onwards. First two
+                         are always locked (origin + sole destination). */}
+                    {idx >= 2 ? (
                       <Pressable
                         onPress={() => removeStop(stop.id)}
                         hitSlop={6}

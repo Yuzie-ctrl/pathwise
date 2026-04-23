@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Location from 'expo-location';
-import { Brush, Eye, EyeOff, Locate, Search } from 'lucide-react-native';
+import { Brush, CalendarClock, Eye, EyeOff, Locate, Search } from 'lucide-react-native';
 
 import MapView, {
   type MapMarker,
@@ -15,6 +15,7 @@ import { NavigationBar } from '@/components/NavigationBar';
 import { RoutePlanner } from '@/components/RoutePlanner';
 import { SearchSheet } from '@/components/SearchSheet';
 import { TransitPlanner } from '@/components/TransitPlanner';
+import { TransportScheduleSheet } from '@/components/TransportScheduleSheet';
 import { Text } from '@/components/ui/text';
 import {
   fetchRoute,
@@ -92,6 +93,10 @@ export default function Home() {
   const [activeMall, setActiveMall] = useState<Mall | null>(null);
   /** Whether mall pins are rendered on the map. Toggled with the store button. */
   const [mallsVisible, setMallsVisible] = useState(true);
+  /** Transport-schedule sheet — opened via calendar button on main screen. */
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+  /** Stop id the user is actively editing via search-sheet replace flow. */
+  const [editingStopId, setEditingStopId] = useState<string | null>(null);
 
   const routeReqRef = useRef(0);
 
@@ -421,7 +426,10 @@ export default function Home() {
   const openDestinationSearch = () => setSearchMode('destination');
   const openOriginSearch = () => setSearchMode('origin');
   const openStopSearch = () => setSearchMode('stop');
-  const closeSearch = () => setSearchMode(null);
+  const closeSearch = () => {
+    setSearchMode(null);
+    setEditingStopId(null);
+  };
 
   const ensureOriginFromUser = useCallback(() => {
     if (stops.length > 0) return;
@@ -433,6 +441,18 @@ export default function Home() {
   }, [stops.length, userLocation, setOriginToMyLocation]);
 
   const handleSearchSelect = (r: GeocodeResult) => {
+    // If we're editing an existing stop, REPLACE its coordinates/label.
+    if (editingStopId) {
+      useTripStore.getState().replaceStop(editingStopId, {
+        label: r.shortName,
+        displayName: r.displayName,
+        latitude: r.latitude,
+        longitude: r.longitude,
+      });
+      setEditingStopId(null);
+      setSearchMode(null);
+      return;
+    }
     if (searchMode === 'origin') {
       setOriginToPlace({
         label: r.shortName,
@@ -470,6 +490,11 @@ export default function Home() {
     setSearchMode(null);
     setPlannerCollapsed(false);
   };
+
+  const handleEditStop = useCallback((stopId: string) => {
+    setEditingStopId(stopId);
+    setSearchMode('stop');
+  }, []);
 
   const handlePickMyLocation = () => {
     // Available in origin/destination contexts as a quick action.
@@ -744,25 +769,40 @@ export default function Home() {
       {showTopSearchBar ? (
         <SafeAreaView edges={['top']} style={{ position: 'absolute', left: 0, right: 0, top: 0 }}>
           <View className="px-4 pt-2">
-            <Pressable
-              onPress={openDestinationSearch}
-              className="flex-row items-center gap-3 rounded-2xl bg-card px-4 py-3"
-              style={{
-                shadowColor: '#000',
-                shadowOffset: { width: 0, height: 2 },
-                shadowOpacity: 0.12,
-                shadowRadius: 8,
-                elevation: 6,
-              }}
-            >
-              <Search size={18} color="#666" />
-              <Text className="flex-1 text-base text-muted-foreground">
-                Куда едем?
-              </Text>
-              <View className="rounded-full bg-primary/10 px-2 py-1">
-                <Text className="text-xs font-semibold text-primary">Rido</Text>
-              </View>
-            </Pressable>
+            <View className="flex-row items-center gap-2">
+              <Pressable
+                onPress={openDestinationSearch}
+                className="flex-1 flex-row items-center gap-3 rounded-2xl bg-card px-4 py-3"
+                style={{
+                  shadowColor: '#000',
+                  shadowOffset: { width: 0, height: 2 },
+                  shadowOpacity: 0.12,
+                  shadowRadius: 8,
+                  elevation: 6,
+                }}
+              >
+                <Search size={18} color="#666" />
+                <Text className="flex-1 text-base text-muted-foreground">
+                  Куда едем?
+                </Text>
+                <View className="rounded-full bg-primary/10 px-2 py-1">
+                  <Text className="text-xs font-semibold text-primary">Rido</Text>
+                </View>
+              </Pressable>
+              <Pressable
+                onPress={() => setScheduleOpen(true)}
+                className="h-[50px] w-[50px] items-center justify-center rounded-2xl bg-card"
+                style={{
+                  shadowColor: '#000',
+                  shadowOffset: { width: 0, height: 2 },
+                  shadowOpacity: 0.12,
+                  shadowRadius: 8,
+                  elevation: 6,
+                }}
+              >
+                <CalendarClock size={22} color="#2563eb" />
+              </Pressable>
+            </View>
           </View>
         </SafeAreaView>
       ) : null}
@@ -871,6 +911,7 @@ export default function Home() {
           onChangeOrigin={openOriginSearch}
           onAddStop={openStopSearch}
           onDrawForStop={handleDrawForStop}
+          onEditStop={handleEditStop}
         />
       ) : null}
 
@@ -883,6 +924,7 @@ export default function Home() {
           onDrawForStop={handleDrawForStop}
           onSelectOption={handleSelectTransitOption}
           onZoomToSegment={handleZoomToSegment}
+          onEditStop={handleEditStop}
         />
       ) : null}
 
@@ -923,6 +965,12 @@ export default function Home() {
 
       {/* Mall POI sheet */}
       <MallSheet mall={activeMall} onClose={() => setActiveMall(null)} />
+
+      {/* Transport schedule sheet (GTFS-backed Supabase data) */}
+      <TransportScheduleSheet
+        visible={scheduleOpen}
+        onClose={() => setScheduleOpen(false)}
+      />
     </View>
   );
 }

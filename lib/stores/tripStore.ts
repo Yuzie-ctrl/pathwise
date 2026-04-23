@@ -184,17 +184,16 @@ export const useTripStore = create<TripState>()(
 
       removeStop: (id) =>
         set((state) => {
-          // Cannot remove the origin (first stop) directly. Instead, if it's
-          // a "place" origin, reset it to myLocation placeholder (lat/lon 0)
-          // so UI can re-resolve. If it's already myLocation, no-op.
           const idx = state.stops.findIndex((s) => s.id === id);
           if (idx === -1) return state;
+          // Origin (idx 0) is never removable.
           if (idx === 0) return state;
+          // Second stop (idx 1) is only removable when there are 3+ stops.
+          // Otherwise the user would be left with just an origin and no
+          // destination — confusing UX. Remove-X is hidden for stop 2 at UI
+          // level, but keep this as defence-in-depth.
+          if (idx === 1 && state.stops.length <= 2) return state;
           const next = state.stops.filter((s) => s.id !== id);
-          // If the only remaining stop is a "myLocation" origin, the user
-          // effectively has no trip planned — wipe everything so the UI
-          // returns to the empty-map / top-search-bar state instead of
-          // leaving the user stuck on a blank map with a dangling origin.
           if (next.length === 1 && next[0].originKind === 'myLocation') {
             return { stops: [], legs: [], drawnRoutes: [] };
           }

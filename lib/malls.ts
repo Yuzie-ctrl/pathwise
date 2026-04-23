@@ -15,6 +15,8 @@ export interface Mall {
   longitude: number;
   /** Floors. Malls without map imagery still have at least one placeholder floor. */
   floors: MallFloor[];
+  /** Known stores / tenants for autocomplete. Filled per-mall. */
+  stores?: string[];
 }
 
 // Tallinn malls — coordinates are approximate (OSM-derived).
@@ -48,6 +50,17 @@ export const MALLS: Mall[] = [
         image: require('@/assets/malls/t1_floor4.png'),
       },
     ],
+    stores: [
+      'Rimi Hypermarket', 'Apollo Kino', 'Super Skypark', 'Apollo Raamatud',
+      'H&M', 'Reserved', 'New Yorker', 'Pull & Bear', 'Bershka',
+      'Stradivarius', 'Lindex', 'Monton', 'KappAhl', 'Jack & Jones', 'Only',
+      'Vero Moda', 'Calzedonia', 'Tommy Hilfiger', 'Nike', 'Adidas', 'Puma',
+      'Sportland', 'Euronics', 'Telia', 'Elisa', 'Tele2', 'R-Kiosk',
+      'Swedbank', 'SEB', 'LHV', 'Benu Apteek', 'Apotheka', 'Douglas',
+      'Yves Rocher', 'Rituals', 'Pandora', 'Swarovski', 'McDonald\u2019s',
+      'KFC', 'Burger King', 'Hesburger', 'Subway', 'Starbucks', 'Caffeine',
+      'Vapiano',
+    ],
   },
   {
     id: 'ulemiste',
@@ -58,6 +71,13 @@ export const MALLS: Mall[] = [
       { number: 1, label: '1 этаж', image: null },
       { number: 2, label: '2 этаж', image: null },
       { number: 3, label: '3 этаж', image: null },
+    ],
+    stores: [
+      'Prisma', 'Apollo Kino', 'Zara', 'Mango', 'H&M', 'Reserved', 'New Yorker',
+      'Bershka', 'Pull & Bear', 'Stradivarius', 'Lindex', 'Tommy Hilfiger',
+      'Calvin Klein', 'Sportland', 'Nike', 'Adidas', 'Euronics', 'Apple',
+      'Telia', 'Elisa', 'Douglas', 'Yves Rocher', 'Rituals', 'Pandora',
+      'Swedbank', 'SEB', 'McDonald\u2019s', 'Hesburger', 'Starbucks', 'Vapiano',
     ],
   },
   {
@@ -71,6 +91,12 @@ export const MALLS: Mall[] = [
       { number: 3, label: '3 этаж', image: null },
       { number: 4, label: '4 этаж', image: null },
     ],
+    stores: [
+      'Rimi', 'Rahva Raamat', 'H&M', 'Zara', 'Mango', 'Lindex', 'Reserved',
+      'Monton', 'Tommy Hilfiger', 'Calvin Klein', 'Apollo', 'Douglas',
+      'Rituals', 'Pandora', 'Swarovski', 'Ideal', 'Swedbank', 'SEB',
+      'McDonald\u2019s', 'KFC', 'Caffeine', 'Starbucks',
+    ],
   },
   {
     id: 'kristiine',
@@ -80,6 +106,11 @@ export const MALLS: Mall[] = [
     floors: [
       { number: 1, label: '1 этаж', image: null },
       { number: 2, label: '2 этаж', image: null },
+    ],
+    stores: [
+      'Selver', 'H&M', 'Reserved', 'New Yorker', 'Lindex', 'Stockmann',
+      'Jack & Jones', 'Only', 'Monton', 'Sportland', 'Euronics', 'Apollo Kino',
+      'R-Kiosk', 'Benu Apteek', 'Hesburger', 'Subway',
     ],
   },
   {
@@ -91,6 +122,10 @@ export const MALLS: Mall[] = [
       { number: 1, label: '1 этаж', image: null },
       { number: 2, label: '2 этаж', image: null },
     ],
+    stores: [
+      'Maxima XXX', 'KappAhl', 'Lindex', 'Sportland', 'Euronics', 'Jysk',
+      'R-Kiosk', 'Apotheka', 'Hesburger',
+    ],
   },
   {
     id: 'mustamae',
@@ -100,6 +135,10 @@ export const MALLS: Mall[] = [
     floors: [
       { number: 1, label: '1 этаж', image: null },
       { number: 2, label: '2 этаж', image: null },
+    ],
+    stores: [
+      'Rimi', 'Coop', 'New Yorker', 'Lindex', 'Sportland', 'Benu Apteek',
+      'R-Kiosk', 'Swedbank', 'Hesburger',
     ],
   },
   {
@@ -111,6 +150,10 @@ export const MALLS: Mall[] = [
       { number: 1, label: '1 этаж', image: null },
       { number: 2, label: '2 этаж', image: null },
     ],
+    stores: [
+      'Rimi', 'Sportmaster', 'KappAhl', 'R-Kiosk', 'SEB', 'Apollo Raamatud',
+      'Subway',
+    ],
   },
   {
     id: 'hobujaama',
@@ -118,6 +161,7 @@ export const MALLS: Mall[] = [
     latitude: 59.4352,
     longitude: 24.7607,
     floors: [{ number: 1, label: '1 этаж', image: null }],
+    stores: ['Selver', 'R-Kiosk', 'Caffeine', 'Apotheka'],
   },
   {
     id: 'lasnamae',
@@ -128,6 +172,10 @@ export const MALLS: Mall[] = [
       { number: 1, label: '1 этаж', image: null },
       { number: 2, label: '2 этаж', image: null },
     ],
+    stores: [
+      'Prisma', 'Apollo Kino', 'Lindex', 'Reserved', 'New Yorker', 'Sportland',
+      'Euronics', 'Benu Apteek', 'Hesburger',
+    ],
   },
   {
     id: 'umera',
@@ -135,6 +183,7 @@ export const MALLS: Mall[] = [
     latitude: 59.4407,
     longitude: 24.8522,
     floors: [{ number: 1, label: '1 этаж', image: null }],
+    stores: ['Rimi', 'R-Kiosk', 'Apotheka', 'Hesburger'],
   },
   {
     id: 'solaris',
@@ -146,6 +195,10 @@ export const MALLS: Mall[] = [
       { number: 2, label: '2 этаж', image: null },
       { number: 3, label: '3 этаж', image: null },
     ],
+    stores: [
+      'Rimi', 'Apollo Kino', 'Rahva Raamat', 'Apollo Raamatud', 'Nordic Hotels',
+      'Vapiano', 'Starbucks', 'R-Kiosk',
+    ],
   },
   {
     id: 'rocca',
@@ -155,6 +208,10 @@ export const MALLS: Mall[] = [
     floors: [
       { number: 1, label: '1 этаж', image: null },
       { number: 2, label: '2 этаж', image: null },
+    ],
+    stores: [
+      'Prisma', 'H&M', 'Reserved', 'Lindex', 'New Yorker', 'Sportland',
+      'Euronics', 'Benu Apteek', 'McDonald\u2019s', 'Hesburger',
     ],
   },
 ];

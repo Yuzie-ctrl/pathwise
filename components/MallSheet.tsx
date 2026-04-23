@@ -8,7 +8,6 @@ import {
   ScrollView,
   TextInput,
   View,
-  useWindowDimensions,
 } from 'react-native';
 import {
   GestureDetector,
@@ -39,74 +38,6 @@ interface MallSheetProps {
 
 type StepId = 'locate' | 'navigate';
 
-// Simple static list of mall stores for autocomplete. Real data would come
-// from per-mall CMS / tenant lists — until then we surface the most common
-// Estonian shopping-mall brands.
-const COMMON_STORES = [
-  'Rimi',
-  'Prisma',
-  'Selver',
-  'Maxima',
-  'Coop',
-  'H&M',
-  'Reserved',
-  'Zara',
-  'Mango',
-  'Pull & Bear',
-  'Bershka',
-  'Stradivarius',
-  'New Yorker',
-  'Lindex',
-  'Monton',
-  'Apollo Kino',
-  'Apollo Raamatud',
-  'Rahva Raamat',
-  'Euronics',
-  'KappAhl',
-  'Jysk',
-  'Sportland',
-  'Sportmaster',
-  'Nike',
-  'Adidas',
-  'Puma',
-  'McDonald\u2019s',
-  'KFC',
-  'Burger King',
-  'Subway',
-  'Hesburger',
-  'Vapiano',
-  'Vero Moda',
-  'Only',
-  'Jack & Jones',
-  'Tommy Hilfiger',
-  'Calvin Klein',
-  'Calzedonia',
-  'Intimissimi',
-  'Douglas',
-  'Yves Rocher',
-  'Rituals',
-  'Lush',
-  'Mediq Apteek',
-  'Benu Apteek',
-  'Apotheka',
-  'Swedbank',
-  'SEB',
-  'LHV',
-  'R-Kiosk',
-  'Telia',
-  'Elisa',
-  'Tele2',
-  'Starbucks',
-  'Caffeine',
-  'Costa Coffee',
-  'Gerlin Konditerid',
-  'O\u2019Learys',
-  'Kalev Sh\u00f6ffel',
-  'Ideal',
-  'Pandora',
-  'Swarovski',
-];
-
 export function MallSheet({ mall, onClose }: MallSheetProps) {
   const [floor, setFloor] = useState<number>(1);
   const [landmarkChips, setLandmarkChips] = useState<string[]>([]);
@@ -117,22 +48,29 @@ export function MallSheet({ mall, onClose }: MallSheetProps) {
   );
   const [step, setStep] = useState<StepId>('locate');
 
-  // Autocomplete suggestions filtered by current input.
-  // NOTE: hooks must run unconditionally — declare before the early `if (!mall)`
-  // return so React's rule-of-hooks is respected.
+  // Autocomplete suggestions filtered by current input — LIMITED to the
+  // stores that are actually tenants of this mall. Falls back gracefully
+  // for malls without a curated tenant list.
+  const storePool = useMemo(
+    () => mall?.stores ?? [],
+    [mall?.stores],
+  );
+
   const landmarkSuggestions = useMemo(() => {
     const q = landmarkInput.trim().toLowerCase();
     if (q.length === 0) return [];
-    return COMMON_STORES.filter(
-      (s) => s.toLowerCase().includes(q) && !landmarkChips.includes(s),
-    ).slice(0, 6);
-  }, [landmarkInput, landmarkChips]);
+    return storePool
+      .filter(
+        (s) => s.toLowerCase().includes(q) && !landmarkChips.includes(s),
+      )
+      .slice(0, 6);
+  }, [landmarkInput, landmarkChips, storePool]);
 
   const destinationSuggestions = useMemo(() => {
     const q = destinationInput.trim().toLowerCase();
     if (q.length === 0) return [];
-    return COMMON_STORES.filter((s) => s.toLowerCase().includes(q)).slice(0, 6);
-  }, [destinationInput]);
+    return storePool.filter((s) => s.toLowerCase().includes(q)).slice(0, 6);
+  }, [destinationInput, storePool]);
 
   // Reset state whenever a different mall is opened.
   const mallId = mall?.id ?? '';
@@ -250,7 +188,21 @@ export function MallSheet({ mall, onClose }: MallSheetProps) {
                     style={{ aspectRatio: 16 / 9, minHeight: 180 }}
                   >
                     {currentFloor?.image ? (
-                      <ZoomableImage source={currentFloor.image} />
+                      <ZoomableImage
+                        source={currentFloor.image}
+                        youPosition={
+                          landmarkChips.length >= 2
+                            ? hashToRatio(
+                                `${mall.id}-${landmarkChips.join('|')}`,
+                              )
+                            : null
+                        }
+                        destinationPosition={
+                          confirmedDestination
+                            ? hashToRatio(`${mall.id}-dest-${confirmedDestination}`)
+                            : null
+                        }
+                      />
                     ) : (
                       <View className="flex-1 items-center justify-center p-4">
                         <Store size={28} color="#999" />
@@ -468,8 +420,34 @@ export function MallSheet({ mall, onClose }: MallSheetProps) {
 // Pinch-to-zoom image wrapper
 // ---------------------------------------------------------------------
 
-function ZoomableImage({ source }: { source: NonNullable<Mall['floors'][0]['image']> }) {
-  const { width: _sw } = useWindowDimensions();
+// ---------------------------------------------------------------------
+// Deterministic [0..1, 0..1] position from a string — used to place
+// "Вы здесь" + destination overlays on the floor plan image without
+// real coordinate data.
+// ---------------------------------------------------------------------
+function hashToRatio(seed: string): { x: number; y: number } {
+  let h1 = 5381;
+  let h2 = 52711;
+  for (let i = 0; i < seed.length; i++) {
+    const c = seed.charCodeAt(i);
+    h1 = ((h1 << 5) + h1 + c) | 0;
+    h2 = ((h2 << 5) + h2 + c * 7) | 0;
+  }
+  // Map to inner 0.18..0.82 range so circles aren't clipped by rounded corners.
+  const x = 0.18 + ((Math.abs(h1) % 1000) / 1000) * 0.64;
+  const y = 0.18 + ((Math.abs(h2) % 1000) / 1000) * 0.64;
+  return { x, y };
+}
+
+function ZoomableImage({
+  source,
+  youPosition,
+  destinationPosition,
+}: {
+  source: NonNullable<Mall['floors'][0]['image']>;
+  youPosition: { x: number; y: number } | null;
+  destinationPosition: { x: number; y: number } | null;
+}) {
   const scale = useSharedValue(1);
   const savedScale = useSharedValue(1);
   const tx = useSharedValue(0);
@@ -478,7 +456,7 @@ function ZoomableImage({ source }: { source: NonNullable<Mall['floors'][0]['imag
   const savedTy = useSharedValue(0);
 
   const MIN_SCALE = 1;
-  const MAX_SCALE = 4;
+  const MAX_SCALE = 6;
 
   const pinch = Gesture.Pinch()
     .onUpdate((e) => {
@@ -487,7 +465,6 @@ function ZoomableImage({ source }: { source: NonNullable<Mall['floors'][0]['imag
     .onEnd(() => {
       savedScale.value = scale.value;
       if (scale.value <= 1.001) {
-        // Snap back to origin
         scale.value = withTiming(1);
         tx.value = withTiming(0);
         ty.value = withTiming(0);
@@ -501,7 +478,6 @@ function ZoomableImage({ source }: { source: NonNullable<Mall['floors'][0]['imag
     .minPointers(1)
     .maxPointers(2)
     .onUpdate((e) => {
-      // Only pan when zoomed-in, otherwise ignore.
       if (scale.value <= 1.001) return;
       tx.value = savedTx.value + e.translationX;
       ty.value = savedTy.value + e.translationY;
@@ -522,8 +498,8 @@ function ZoomableImage({ source }: { source: NonNullable<Mall['floors'][0]['imag
         savedTx.value = 0;
         savedTy.value = 0;
       } else {
-        scale.value = withTiming(2);
-        savedScale.value = 2;
+        scale.value = withTiming(2.5);
+        savedScale.value = 2.5;
       }
     });
 
@@ -545,7 +521,129 @@ function ZoomableImage({ source }: { source: NonNullable<Mall['floors'][0]['imag
           style={{ width: '100%', height: '100%' }}
           resizeMode="contain"
         />
+        {/* Overlays: position absolutely in % — stay in sync with image. */}
+        {youPosition ? (
+          <View
+            pointerEvents="none"
+            style={{
+              position: 'absolute',
+              left: `${youPosition.x * 100}%`,
+              top: `${youPosition.y * 100}%`,
+              transform: [{ translateX: -16 }, { translateY: -16 }],
+            }}
+          >
+            <View
+              style={{
+                width: 32,
+                height: 32,
+                borderRadius: 16,
+                borderWidth: 3,
+                borderColor: '#ef4444',
+                backgroundColor: 'rgba(239,68,68,0.25)',
+              }}
+            />
+            <View
+              style={{
+                position: 'absolute',
+                left: 12,
+                top: 12,
+                width: 8,
+                height: 8,
+                borderRadius: 4,
+                backgroundColor: '#ef4444',
+              }}
+            />
+          </View>
+        ) : null}
+        {destinationPosition ? (
+          <View
+            pointerEvents="none"
+            style={{
+              position: 'absolute',
+              left: `${destinationPosition.x * 100}%`,
+              top: `${destinationPosition.y * 100}%`,
+              transform: [{ translateX: -12 }, { translateY: -12 }],
+            }}
+          >
+            <View
+              style={{
+                width: 24,
+                height: 24,
+                borderRadius: 12,
+                backgroundColor: '#2563eb',
+                borderWidth: 2,
+                borderColor: '#fff',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              <MapPin size={12} color="#fff" />
+            </View>
+          </View>
+        ) : null}
+        {/* Dashed "path" line between you + destination */}
+        {youPosition && destinationPosition ? (
+          <PathLine from={youPosition} to={destinationPosition} />
+        ) : null}
       </Animated.View>
     </GestureDetector>
+  );
+}
+
+function PathLine({
+  from,
+  to,
+}: {
+  from: { x: number; y: number };
+  to: { x: number; y: number };
+}) {
+  // Render as a single absolutely-positioned rotated View acting as a dashed
+  // line. We approximate the hypotenuse in percent coordinates by flattening
+  // to pixel values via onLayout.
+  const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
+  if (size.w === 0 || size.h === 0) {
+    return (
+      <View
+        onLayout={(e) =>
+          setSize({
+            w: e.nativeEvent.layout.width,
+            h: e.nativeEvent.layout.height,
+          })
+        }
+        style={{ position: 'absolute', inset: 0 }}
+      />
+    );
+  }
+  const x1 = from.x * size.w;
+  const y1 = from.y * size.h;
+  const x2 = to.x * size.w;
+  const y2 = to.y * size.h;
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const length = Math.sqrt(dx * dx + dy * dy);
+  const angleDeg = (Math.atan2(dy, dx) * 180) / Math.PI;
+  return (
+    <View
+      pointerEvents="none"
+      style={{
+        position: 'absolute',
+        left: x1,
+        top: y1,
+        width: length,
+        height: 3,
+        transform: [{ translateY: -1.5 }, { rotate: `${angleDeg}deg` }],
+        transformOrigin: '0% 50%' as unknown as undefined,
+      }}
+    >
+      <View
+        style={{
+          width: '100%',
+          height: '100%',
+          backgroundColor: '#2563eb',
+          opacity: 0.85,
+          borderRadius: 2,
+        }}
+      />
+    </View>
   );
 }

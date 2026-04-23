@@ -217,8 +217,8 @@ export default function MapView({
         animate
         mouseEvents={scrollEnabled}
         touchEvents={scrollEnabled}
-        minZoom={minZoomLevel}
-        maxZoom={maxZoomLevel}
+        minZoom={minZoomLevel ?? 2}
+        maxZoom={maxZoomLevel ?? 22}
         zoomSnap={zoomEnabled}
         height={mapHeight}
         width={mapWidth}

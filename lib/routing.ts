@@ -84,22 +84,36 @@ export async function geocodeSearch(
   const data = (await res.json()) as {
     display_name: string;
     name?: string;
+    type?: string;
+    class?: string;
     lat: string;
     lon: string;
     address?: NominatimAddress;
   }[];
 
   return data.map((item) => {
-    const short = formatAddressShort(
+    const addressShort = formatAddressShort(
       item.address,
-      item.name || item.display_name.split(',')[0],
+      item.display_name.split(',')[0],
     );
+    // If the result is a named POI (e.g. a mall, restaurant, park), surface
+    // the POI name as the TITLE and use the street-address as the subtitle.
+    // Heuristic: Nominatim returns `name` for POIs; for pure addresses the
+    // `name` field is either absent or equal to the street/number part.
+    const isPoi =
+      !!item.name &&
+      item.name.trim().length > 0 &&
+      item.name !== addressShort &&
+      // Don't treat the first comma-separated chunk (often the house number
+      // alone, e.g. "98") as a POI name.
+      !/^\d+[A-Za-z]?$/.test(item.name.trim());
+    const shortName = isPoi ? item.name!.trim() : addressShort;
     return {
       // Keep the full, comma-separated Nominatim description (city, postal code,
       // region, country) so UI can render a secondary detail line under the
       // short street-address title.
       displayName: item.display_name,
-      shortName: short,
+      shortName,
       latitude: parseFloat(item.lat),
       longitude: parseFloat(item.lon),
     };

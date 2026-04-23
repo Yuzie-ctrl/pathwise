@@ -160,8 +160,11 @@ bg${i}.on('click',function(){window.ReactNativeWebView.postMessage(JSON.stringif
     !options.zoomEnabled
       ? 'zoomControl:false,scrollWheelZoom:false,doubleClickZoom:false,touchZoom:false,boxZoom:false'
       : '',
-    options.minZoomLevel != null ? `minZoom:${options.minZoomLevel}` : '',
-    options.maxZoomLevel != null ? `maxZoom:${options.maxZoomLevel}` : '',
+    // Allow deep pinch/wheel zoom. OSM tile server supports up to ~19, but
+    // Leaflet can scale via `maxNativeZoom` — use generous caps so user can
+    // zoom as close as desired.
+    `minZoom:${options.minZoomLevel ?? 2}`,
+    `maxZoom:${options.maxZoomLevel ?? 22}`,
   ]
     .filter(Boolean)
     .join(',');
@@ -176,7 +179,7 @@ bg${i}.on('click',function(){window.ReactNativeWebView.postMessage(JSON.stringif
 <div id="map"></div>
 <script>
 var map = L.map('map',{${mapOptions}}).setView([${region.latitude},${region.longitude}],${zoom});
-L.tileLayer('${tileUrl(options.mapType)}',{attribution:'© OpenStreetMap'}).addTo(map);
+L.tileLayer('${tileUrl(options.mapType)}',{attribution:'© OpenStreetMap',maxZoom:22,maxNativeZoom:19}).addTo(map);
 map.on('click',function(e){window.ReactNativeWebView.postMessage(JSON.stringify({type:'press',lat:e.latlng.lat,lng:e.latlng.lng}))});
 map.on('contextmenu',function(e){window.ReactNativeWebView.postMessage(JSON.stringify({type:'longPress',lat:e.latlng.lat,lng:e.latlng.lng}))});
 ${pinMarkersJs}

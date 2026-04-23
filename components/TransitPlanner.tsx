@@ -65,6 +65,8 @@ interface TransitPlannerProps {
   onSelectOption?: (option: TransitOption | null) => void;
   /** Zoom the map to a specific segment of the current transit option. */
   onZoomToSegment?: (segmentIndex: number) => void;
+  /** Re-open search to replace an existing stop (idx>=1). */
+  onEditStop?: (stopId: string) => void;
 }
 
 function formatHHMM(d: Date) {
@@ -80,6 +82,7 @@ export function TransitPlanner({
   onDrawForStop,
   onSelectOption,
   onZoomToSegment,
+  onEditStop,
 }: TransitPlannerProps) {
   const stops = useTripStore((s) => s.stops);
   const mode = useTripStore((s) => s.mode);
@@ -412,7 +415,12 @@ export function TransitPlanner({
                         </Text>
                       </Pressable>
                     ) : (
-                      <View className="flex-1">
+                      <Pressable
+                        onPress={
+                          onEditStop ? () => onEditStop(stop.id) : undefined
+                        }
+                        className="flex-1 rounded-md px-1 py-0.5 active:bg-muted"
+                      >
                         <Text className="text-sm text-foreground" numberOfLines={1}>
                           <Text className="text-sm text-muted-foreground">
                             Точка {idx + 1}.{' '}
@@ -427,7 +435,7 @@ export function TransitPlanner({
                             </Text>
                           </View>
                         ) : null}
-                      </View>
+                      </Pressable>
                     )}
                     {!isOrigin && onDrawForStop ? (
                       <Pressable
@@ -448,7 +456,7 @@ export function TransitPlanner({
                       <Pressable
                         onPress={() => setDwellPickerStopId(stop.id)}
                         hitSlop={6}
-                        className={`h-7 px-2 flex-row items-center justify-center rounded-full ${
+                        className={`h-7 w-7 items-center justify-center rounded-full ${
                           stop.dwellMinutes > 0 ? 'bg-primary/10' : 'bg-muted'
                         }`}
                       >
@@ -456,11 +464,6 @@ export function TransitPlanner({
                           size={11}
                           color={stop.dwellMinutes > 0 ? '#2563eb' : '#666'}
                         />
-                        {stop.dwellMinutes === 0 ? (
-                          <Text className="ml-1 text-[10px] font-medium text-foreground">
-                            Пауза
-                          </Text>
-                        ) : null}
                       </Pressable>
                     ) : null}
                     {/* Reorder */}
@@ -484,7 +487,7 @@ export function TransitPlanner({
                         </Pressable>
                       </View>
                     ) : null}
-                    {!isOrigin ? (
+                    {idx >= 2 ? (
                       <Pressable
                         onPress={() => removeStop(stop.id)}
                         hitSlop={6}
