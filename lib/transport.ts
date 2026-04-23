@@ -2,11 +2,11 @@ import { supabase } from './supabase';
 
 // ---------------------------------------------------------------------------
 // Real source of truth: user-provided GTFS tables in Supabase
-// Tables (case & spaces matter):
+// Tables (all underscored, no spaces):
 //   - GTFS_Rido_routes
-//   - "GTFS Rido stops"
-//   - "GTFS Rido trips"
-//   - "GTFS Rido stop times"
+//   - GTFS_Rido_stops
+//   - GTFS_Rido_trips
+//   - GTFS_Rido_stop_times
 //
 // Columns used:
 //   routes:     route_id (string hash), route_short_name, route_long_name,
@@ -24,12 +24,16 @@ import { supabase } from './supabase';
 // ---------------------------------------------------------------------------
 
 const ROUTES_TABLE = 'GTFS_Rido_routes';
-const STOPS_TABLE = 'GTFS Rido stops';
-const TRIPS_TABLE = 'GTFS Rido trips';
-const STOP_TIMES_TABLE = 'GTFS Rido stop times';
+const STOPS_TABLE = 'GTFS_Rido_stops';
+const TRIPS_TABLE = 'GTFS_Rido_trips';
+const STOP_TIMES_TABLE = 'GTFS_Rido_stop_times';
 
-// Scope the app to Tallinn + Harjumaa only per product brief.
+// Scope: user asked for ALL routes/stops to be visible (transport schedule
+// screens), not just Tallinn + Harjumaa. We keep the authority filter list
+// available for future re-scoping but no longer apply it anywhere.
 const ALLOWED_AUTHORITIES = ['Tallinna TA', 'Harjumaa ÜTK'];
+// Mark as used so TS/lint doesn't complain when filter is dropped.
+void ALLOWED_AUTHORITIES;
 
 // ---------------------------------------------------------------------------
 // Public types — kept stable, TransportScheduleSheet depends on these.
@@ -50,6 +54,8 @@ export interface TransportRoute {
   long_name: string;
   vehicle_kind: VehicleKind;
   operator: Operator;
+  /** Raw competent_authority from the GTFS feed (e.g. "Tallinna TA", "Võru MV"). */
+  authority_raw: string | null;
   color: string | null;
 }
 
@@ -169,6 +175,7 @@ function mapRoute(r: RawRoute): TransportRoute {
     long_name: r.route_long_name ?? '',
     vehicle_kind: routeTypeToVehicleKind(r.route_type ?? 3, shortName),
     operator: authorityToOperator(r.competent_authority),
+    authority_raw: r.competent_authority ?? null,
     color: normalizeColor(r.route_color),
   };
 }
@@ -232,20 +239,78 @@ export function vehicleLabel(kind: VehicleKind): string {
   }
 }
 
+/** Human-readable label for a competent_authority value. */
+export function authorityLabel(raw: string | null | undefined): string {
+  if (!raw) return 'Прочее';
+  const map: Record<string, string> = {
+    'Tallinna TA': 'Таллинн',
+    'Harjumaa ÜTK': 'Харьюмаа',
+    'Tartu LV': 'Тарту',
+    'Tartu MV': 'Тартумаа',
+    'Pärnu LV': 'Пярну',
+    'Pärnu MV': 'Пярнумаа',
+    'Narva LV': 'Нарва',
+    'Kohtla-Järve LV': 'Кохтла-Ярве',
+    'Sillamäe LV': 'Силламяэ',
+    'Jõhvi linn': 'Йыхви',
+    'Ida-Viru MV': 'Ида-Вирумаа',
+    'Lääne-Viru MV': 'Ляэне-Вирумаа',
+    'Lääne MV': 'Ляэнемаа',
+    'Rapla MV': 'Рапламаа',
+    'Saare MV': 'Сааремаа',
+    'Hiiu MV': 'Хийумаа',
+    'Valga MV': 'Валгамаа',
+    'Viljandi MV': 'Вильяндимаа',
+    'Põlva MV': 'Пылвамаа',
+    'Võru MV': 'Вырумаа',
+    'Järvamaa ÜTK': 'Ярвамаа',
+    'Jõgeva ÜTK': 'Йыгевамаа',
+    'MKM': 'MKM',
+    'Maanteeamet': 'Maanteeamet',
+  };
+  return map[raw] ?? raw;
+}
+
+/** Natural sort for route short_names: numeric prefix first, then alphabetical. */
+export function compareRouteShortNames(a: string, b: string): number {
+  const ma = /^(\d+)/.exec(a);
+  const mb = /^(\d+)/.exec(b);
+  if (ma && mb) {
+    const na = Number.parseInt(ma[1], 10);
+    const nb = Number.parseInt(mb[1], 10);
+    if (na !== nb) return na - nb;
+  } else if (ma) {
+    return -1;
+  } else if (mb) {
+    return 1;
+  }
+  return a.localeCompare(b, 'et');
+}
+
 // ---------------------------------------------------------------------------
 // Queries
 // ---------------------------------------------------------------------------
 
 export async function fetchAllRoutes(): Promise<TransportRoute[]> {
-  const { data, error } = await supabase
-    .from(ROUTES_TABLE)
-    .select(
-      'route_id, route_short_name, route_long_name, route_type, route_color, competent_authority',
-    )
-    .in('competent_authority', ALLOWED_AUTHORITIES)
-    .order('route_short_name');
-  if (error) throw error;
-  return ((data ?? []) as RawRoute[]).map(mapRoute);
+  // Fetch in pages of 1000 (PostgREST default max per request) so we get
+  // every route across every authority, not just the first 1000.
+  const PAGE = 1000;
+  const out: TransportRoute[] = [];
+  for (let offset = 0; ; offset += PAGE) {
+    const { data, error } = await supabase
+      .from(ROUTES_TABLE)
+      .select(
+        'route_id, route_short_name, route_long_name, route_type, route_color, competent_authority',
+      )
+      .order('route_short_name')
+      .range(offset, offset + PAGE - 1);
+    if (error) throw error;
+    const batch = ((data ?? []) as RawRoute[]).map(mapRoute);
+    out.push(...batch);
+    if (batch.length < PAGE) break;
+    if (offset > 20000) break; // hard safety cap
+  }
+  return out;
 }
 
 export async function searchStops(q: string): Promise<TransportStop[]> {
@@ -270,9 +335,8 @@ export async function searchRoutes(q: string): Promise<TransportRoute[]> {
       'route_id, route_short_name, route_long_name, route_type, route_color, competent_authority',
     )
     .ilike('route_short_name', `${needle}%`)
-    .in('competent_authority', ALLOWED_AUTHORITIES)
     .order('route_short_name')
-    .limit(40);
+    .limit(80);
   if (error) throw error;
   return ((data ?? []) as RawRoute[]).map(mapRoute);
 }
@@ -402,14 +466,13 @@ export async function fetchRoutesAtStop(stopId: string): Promise<TransportRoute[
   );
   if (routeIds.length === 0) return [];
 
-  // 3. Bulk-fetch the routes, filtered to allowed authorities.
+  // 3. Bulk-fetch the routes — no authority filter; show everything.
   const { data: routes, error: rErr } = await supabase
     .from(ROUTES_TABLE)
     .select(
       'route_id, route_short_name, route_long_name, route_type, route_color, competent_authority',
     )
-    .in('route_id', routeIds)
-    .in('competent_authority', ALLOWED_AUTHORITIES);
+    .in('route_id', routeIds);
   if (rErr) throw rErr;
   const out = ((routes ?? []) as RawRoute[]).map(mapRoute);
   out.sort((a, b) => a.short_name.localeCompare(b.short_name, 'et'));
@@ -470,7 +533,8 @@ export async function fetchNextArrivals(
     for (const t of (trips ?? []) as RawTrip[]) tripById.set(t.trip_id, t);
   }
 
-  // 3. Fetch routes (only allowed authorities).
+  // 3. Fetch routes — no authority filter so night buses / regional routes
+  //    that happen to stop here are also surfaced.
   const routeIds = Array.from(
     new Set(Array.from(tripById.values()).map((t) => t.route_id)),
   );
@@ -482,8 +546,7 @@ export async function fetchNextArrivals(
       .select(
         'route_id, route_short_name, route_long_name, route_type, route_color, competent_authority',
       )
-      .in('route_id', slice)
-      .in('competent_authority', ALLOWED_AUTHORITIES);
+      .in('route_id', slice);
     if (rErr) throw rErr;
     for (const r of (routes ?? []) as RawRoute[])
       routeById.set(r.route_id, mapRoute(r));
@@ -713,7 +776,6 @@ export async function findNearbyStops(
     .lte('stop_lat', lat + dLat)
     .gte('stop_lon', lon - dLon)
     .lte('stop_lon', lon + dLon)
-    .in('authority', ALLOWED_AUTHORITIES)
     .limit(400);
   if (error) throw error;
 
@@ -898,8 +960,7 @@ export async function findDirectTransitRides(
       .select(
         'route_id, route_short_name, route_long_name, route_type, route_color, competent_authority',
       )
-      .in('route_id', slice)
-      .in('competent_authority', ALLOWED_AUTHORITIES);
+      .in('route_id', slice);
     if (rErr) throw rErr;
     for (const r of (routes ?? []) as RawRoute[]) {
       routeById.set(r.route_id, mapRoute(r));

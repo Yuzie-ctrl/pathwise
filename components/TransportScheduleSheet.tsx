@@ -45,6 +45,7 @@ import {
   searchStops,
   serviceDayFor,
   vehicleColor,
+  authorityLabel,
   type NextArrival,
   type RouteStopListItem,
   type ServiceDay,
@@ -381,10 +382,21 @@ function HomeView({
           searchStops(trimmed),
           searchRoutes(trimmed),
         ]);
+        // eslint-disable-next-line no-console
+        console.log(
+          '[TransportScheduleSheet] search',
+          JSON.stringify(trimmed),
+          '→',
+          stops.length,
+          'stops,',
+          routes.length,
+          'routes',
+        );
         setStopSuggestions(stops);
         setRouteSuggestions(routes);
-      } catch {
-        // ignore
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn('[TransportScheduleSheet] search error', e);
       } finally {
         setLoading(false);
       }
@@ -578,33 +590,81 @@ function HomeView({
 }
 
 // ---------------------------------------------------------------------------
-// All routes view (grouped by operator + kind)
+// All routes view — grouped by authority + vehicle kind, ALL operators.
 // ---------------------------------------------------------------------------
 function AllRoutesView({ onPick }: { onPick: (r: TransportRoute) => void }) {
   const [routes, setRoutes] = useState<TransportRoute[] | null>(null);
-  const [tab, setTab] = useState<'tallinn' | 'harjumaa'>('tallinn');
-  const [kind, setKind] = useState<'bus' | 'tram' | 'night_bus'>('bus');
+  const [authority, setAuthority] = useState<string>('Tallinna TA');
+  const [kind, setKind] = useState<'all' | 'bus' | 'tram' | 'night_bus'>('all');
 
   useEffect(() => {
     fetchAllRoutes()
-      .then(setRoutes)
-      .catch(() => setRoutes([]));
+      .then((r) => {
+        // Temporary diagnostic — lets us confirm data reaches state.
+        // eslint-disable-next-line no-console
+        console.log(
+          '[TransportScheduleSheet] fetchAllRoutes →',
+          r.length,
+          'routes; first 3:',
+          r.slice(0, 3).map((x) => ({
+            id: x.id,
+            short_name: x.short_name,
+            authority: x.authority_raw,
+            kind: x.vehicle_kind,
+          })),
+        );
+        setRoutes(r);
+      })
+      .catch((e) => {
+        // eslint-disable-next-line no-console
+        console.warn('[TransportScheduleSheet] fetchAllRoutes error', e);
+        setRoutes([]);
+      });
   }, []);
+
+  // Compute list of authorities present in the dataset, sorted by count desc.
+  const authoritiesOrdered = useMemo(() => {
+    if (!routes) return [] as string[];
+    const counts = new Map<string, number>();
+    for (const r of routes) {
+      const k = r.authority_raw ?? 'Прочее';
+      counts.set(k, (counts.get(k) ?? 0) + 1);
+    }
+    // Pin Tallinna TA + Harjumaa ÜTK first, then rest by count desc.
+    const PINNED = ['Tallinna TA', 'Harjumaa ÜTK'];
+    const rest = Array.from(counts.keys())
+      .filter((k) => !PINNED.includes(k))
+      .sort((a, b) => (counts.get(b) ?? 0) - (counts.get(a) ?? 0));
+    return [...PINNED.filter((k) => counts.has(k)), ...rest];
+  }, [routes]);
+
+  // Auto-select first available authority once data loads (if current isn't present).
+  useEffect(() => {
+    if (authoritiesOrdered.length === 0) return;
+    if (!authoritiesOrdered.includes(authority)) {
+      setAuthority(authoritiesOrdered[0]);
+    }
+  }, [authoritiesOrdered, authority]);
 
   const filtered = useMemo(() => {
     if (!routes) return [];
-    return routes.filter(
-      (r) =>
-        r.operator === tab &&
-        (tab === 'harjumaa'
-          ? true
-          : kind === 'bus'
-            ? r.vehicle_kind === 'bus'
-            : kind === 'tram'
-              ? r.vehicle_kind === 'tram'
-              : r.vehicle_kind === 'night_bus'),
-    );
-  }, [routes, tab, kind]);
+    const list = routes.filter((r) => (r.authority_raw ?? 'Прочее') === authority);
+    if (kind === 'all') return list;
+    return list.filter((r) => r.vehicle_kind === kind);
+  }, [routes, authority, kind]);
+
+  // Show which vehicle kinds are actually available for the selected authority
+  const availableKinds = useMemo(() => {
+    if (!routes) return new Set<VehicleKindFilter>();
+    const s = new Set<VehicleKindFilter>();
+    for (const r of routes) {
+      if ((r.authority_raw ?? 'Прочее') !== authority) continue;
+      if (r.vehicle_kind === 'bus') s.add('bus');
+      else if (r.vehicle_kind === 'tram') s.add('tram');
+      else if (r.vehicle_kind === 'night_bus') s.add('night_bus');
+    }
+    return s;
+  }, [routes, authority]);
 
   if (!routes) {
     return (
@@ -616,32 +676,44 @@ function AllRoutesView({ onPick }: { onPick: (r: TransportRoute) => void }) {
 
   return (
     <View className="flex-1">
-      {/* Operator tabs */}
-      <View className="flex-row border-b border-border">
-        {(['tallinn', 'harjumaa'] as const).map((o) => {
-          const active = tab === o;
+      {/* Authority chips (horizontally scrollable) */}
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={{ paddingHorizontal: 12, paddingVertical: 10, gap: 8 }}
+        className="border-b border-border"
+      >
+        {authoritiesOrdered.map((a) => {
+          const active = authority === a;
           return (
             <Pressable
-              key={o}
-              onPress={() => setTab(o)}
-              className={`flex-1 items-center py-3 ${active ? 'border-b-2 border-primary' : ''}`}
+              key={a}
+              onPress={() => {
+                setAuthority(a);
+                setKind('all');
+              }}
+              className={`rounded-full px-3 py-1.5 ${active ? 'bg-primary' : 'bg-muted'}`}
             >
               <Text
-                className={`text-sm font-semibold ${active ? 'text-foreground' : 'text-muted-foreground'}`}
+                className={`text-xs font-semibold ${active ? 'text-primary-foreground' : 'text-foreground'}`}
               >
-                {o === 'tallinn' ? 'Tallinna Transport' : 'Harjumaa'}
+                {authorityLabel(a)}
               </Text>
             </Pressable>
           );
         })}
-      </View>
-      {tab === 'tallinn' ? (
-        <View className="flex-row border-b border-border">
-          {([
-            { k: 'bus', l: 'Автобус' },
-            { k: 'tram', l: 'Трамвай' },
-            { k: 'night_bus', l: 'Ночной' },
-          ] as const).map((o) => {
+      </ScrollView>
+
+      {/* Vehicle-kind sub-tabs — only show options actually present */}
+      <View className="flex-row border-b border-border">
+        {([
+          { k: 'all' as const, l: 'Все' },
+          { k: 'bus' as const, l: 'Автобус' },
+          { k: 'tram' as const, l: 'Трамвай' },
+          { k: 'night_bus' as const, l: 'Ночной' },
+        ] as const)
+          .filter((o) => o.k === 'all' || availableKinds.has(o.k))
+          .map((o) => {
             const active = kind === o.k;
             return (
               <Pressable
@@ -657,12 +729,20 @@ function AllRoutesView({ onPick }: { onPick: (r: TransportRoute) => void }) {
               </Pressable>
             );
           })}
-        </View>
-      ) : null}
+      </View>
+
+      <View className="px-4 py-2">
+        <Text className="text-xs text-muted-foreground">
+          {filtered.length} маршрут
+          {filtered.length % 10 === 1 && filtered.length % 100 !== 11 ? '' : filtered.length % 10 >= 2 && filtered.length % 10 <= 4 && (filtered.length % 100 < 10 || filtered.length % 100 >= 20) ? 'а' : 'ов'}
+        </Text>
+      </View>
 
       <FlatList
         data={filtered}
         keyExtractor={(r) => r.id}
+        initialNumToRender={30}
+        windowSize={7}
         renderItem={({ item }) => (
           <Pressable
             onPress={() => onPick(item)}
@@ -670,7 +750,7 @@ function AllRoutesView({ onPick }: { onPick: (r: TransportRoute) => void }) {
           >
             <RouteBadge route={item} />
             <Text className="flex-1 text-sm text-foreground" numberOfLines={2}>
-              {item.long_name}
+              {item.long_name || item.short_name}
             </Text>
             <ChevronRight size={16} color="#888" />
           </Pressable>
@@ -684,6 +764,8 @@ function AllRoutesView({ onPick }: { onPick: (r: TransportRoute) => void }) {
     </View>
   );
 }
+
+type VehicleKindFilter = 'bus' | 'tram' | 'night_bus';
 
 // ---------------------------------------------------------------------------
 // Direction picker
