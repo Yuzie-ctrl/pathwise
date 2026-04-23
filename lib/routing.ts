@@ -953,6 +953,129 @@ export function buildTransitOptions(
 }
 
 /**
+ * Build `TransitOption` objects from real GTFS direct rides.
+ * Each ride becomes one option: walk → bus → walk.
+ */
+export function buildTransitOptionsFromGtfs(
+  rides: {
+    route: { id: string; short_name: string; long_name: string; vehicle_kind: string; color: string | null };
+    trip: { id: string; direction: number; headsign: string };
+    fromStop: { id: string; name: string };
+    toStop: { id: string; name: string };
+    departureMinute: number;
+    arrivalMinute: number;
+    rideMinutes: number;
+    walkFromMeters: number;
+    walkToMeters: number;
+    intermediateStops: string[];
+    stopsCount: number;
+  }[],
+  originLabel: string,
+  destinationLabel: string,
+  reference: Date,
+  viaStops: TransitPlanStop[] = [],
+): TransitOption[] {
+  if (rides.length === 0) return [];
+  const nowMin = reference.getHours() * 60 + reference.getMinutes();
+
+  return rides.map((ride, idx) => {
+    const walkFromSec = Math.round(ride.walkFromMeters / AVG_SPEED_MPS.walking);
+    const walkToSec = Math.round(ride.walkToMeters / AVG_SPEED_MPS.walking);
+    const rideSec = Math.max(60, ride.rideMinutes * 60);
+    const totalSec = walkFromSec + rideSec + walkToSec;
+    const walkMinutes = Math.max(1, Math.round((walkFromSec + walkToSec) / 60));
+    const departureInMinutes = (ride.departureMinute - nowMin + 1440) % 1440;
+
+    const rideKind: TransitSegment['kind'] =
+      ride.route.vehicle_kind === 'tram'
+        ? 'tram'
+        : ride.route.vehicle_kind === 'train'
+          ? 'train'
+          : 'bus';
+
+    // Collapse viaStops dwells onto the single-vehicle timeline so the detail
+    // pane can still show configured pauses.
+    const segments: TransitSegment[] = [];
+    segments.push({
+      kind: 'walk',
+      durationSeconds: walkFromSec,
+      distanceMeters: ride.walkFromMeters,
+      from: originLabel,
+      to: ride.fromStop.name,
+    });
+    segments.push({
+      kind: rideKind,
+      durationSeconds: rideSec,
+      distanceMeters: Math.max(
+        ride.walkFromMeters,
+        ride.rideMinutes * AVG_SPEED_MPS.driving * 60 * 0.55,
+      ),
+      line: ride.route.short_name,
+      vehicleKind:
+        ride.route.vehicle_kind === 'trolley'
+          ? 'trolley'
+          : ride.route.vehicle_kind === 'tram'
+            ? 'tram'
+            : ride.route.vehicle_kind === 'train'
+              ? 'train'
+              : 'bus',
+      from: ride.fromStop.name,
+      to: ride.toStop.name,
+      stopsCount: ride.stopsCount,
+      headsign: ride.trip.headsign,
+      intermediateStops: ride.intermediateStops,
+    });
+    // Insert dwells from via-stops (they represent user-configured pauses at
+    // the destination side of the ride — displayed as non-counted pause rows).
+    for (const vs of viaStops) {
+      if (vs.dwellMinutes > 0) {
+        segments.push({
+          kind: 'walk',
+          durationSeconds: vs.dwellMinutes * 60,
+          distanceMeters: 0,
+          from: vs.label,
+          to: vs.label,
+          isDwell: true,
+        });
+      }
+    }
+    segments.push({
+      kind: 'walk',
+      durationSeconds: walkToSec,
+      distanceMeters: ride.walkToMeters,
+      from: ride.toStop.name,
+      to: destinationLabel,
+    });
+
+    const vehicleKinds: TransitOption['vehicleKinds'] = [
+      (ride.route.vehicle_kind === 'tram'
+        ? 'tram'
+        : ride.route.vehicle_kind === 'trolley'
+          ? 'trolley'
+          : ride.route.vehicle_kind === 'train'
+            ? 'train'
+            : 'bus'),
+    ];
+
+    return {
+      id: `gtfs-${ride.route.id}-${ride.trip.id}-${idx}`,
+      label: `${ride.route.short_name} · ${ride.trip.headsign || destinationLabel}`,
+      description:
+        idx === 0
+          ? 'Прямой рейс'
+          : `Альтернативный рейс ${idx + 1}`,
+      durationSeconds: totalSec,
+      walkMinutes,
+      transfers: 0,
+      busLines: [ride.route.short_name],
+      vehicleKinds,
+      departureInMinutes,
+      segments,
+    };
+  });
+}
+
+/**
  * All unique transit line numbers that could appear in the given options.
  * Used for the "filter by line" chip picker.
  */

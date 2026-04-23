@@ -633,3 +633,362 @@ export interface TransportFavorite {
   stopLabel: string;
   addedAt: number;
 }
+
+// ---------------------------------------------------------------------------
+// GTFS-based transit routing between two geo points.
+// ---------------------------------------------------------------------------
+//
+// We find the N closest stops around origin and around destination, then look
+// for trips that serve an origin-stop BEFORE a destination-stop on the same
+// trip_id. This gives a real direct-bus option with the actual line number,
+// real ride time, and real departure clock times. For options that can't be
+// reached by a single vehicle we fall back to the synthetic options produced
+// by buildTransitOptions in lib/routing.ts.
+//
+// This is a pragmatic subset of full GTFS routing — no transfer search, no
+// shape polylines — but gives realistic direct-ride variants for Tallinn +
+// Harjumaa where most origin/destination pairs have a direct line.
+
+export interface GtfsTransitRide {
+  /** Route used for this ride. */
+  route: TransportRoute;
+  /** Specific trip that realises the ride. */
+  trip: TransportTrip;
+  /** Origin boarding stop. */
+  fromStop: TransportStop;
+  /** Destination alighting stop. */
+  toStop: TransportStop;
+  /** Clock minute (mod 1440) of departure at fromStop. */
+  departureMinute: number;
+  /** Clock minute of arrival at toStop. */
+  arrivalMinute: number;
+  /** Ride duration (minutes). */
+  rideMinutes: number;
+  /** Walk from origin geo point to fromStop (meters). */
+  walkFromMeters: number;
+  /** Walk from toStop to destination geo point (meters). */
+  walkToMeters: number;
+  /** Ordered intermediate stop names between fromStop and toStop (exclusive). */
+  intermediateStops: string[];
+  /** Number of stops traversed between from and to (inclusive of both). */
+  stopsCount: number;
+}
+
+/** Haversine distance in meters. */
+function haversineMeters(
+  aLat: number,
+  aLon: number,
+  bLat: number,
+  bLon: number,
+): number {
+  const R = 6371000;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(bLat - aLat);
+  const dLon = toRad(bLon - aLon);
+  const sinLat = Math.sin(dLat / 2);
+  const sinLon = Math.sin(dLon / 2);
+  const h =
+    sinLat * sinLat +
+    Math.cos(toRad(aLat)) * Math.cos(toRad(bLat)) * sinLon * sinLon;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+/** Find nearby stops within ~`maxMeters` (default 800 m) of a point, capped. */
+export async function findNearbyStops(
+  lat: number,
+  lon: number,
+  opts: { maxMeters?: number; limit?: number } = {},
+): Promise<{ stop: TransportStop; distanceMeters: number }[]> {
+  const maxMeters = opts.maxMeters ?? 800;
+  const limit = opts.limit ?? 6;
+
+  // 1° latitude ≈ 111 320 m. 1° longitude at 59°N ≈ 56 700 m.
+  const dLat = maxMeters / 111320;
+  const dLon = maxMeters / (111320 * Math.cos((lat * Math.PI) / 180));
+
+  const { data, error } = await supabase
+    .from(STOPS_TABLE)
+    .select('stop_id, stop_name, stop_lat, stop_lon, alias, authority')
+    .gte('stop_lat', lat - dLat)
+    .lte('stop_lat', lat + dLat)
+    .gte('stop_lon', lon - dLon)
+    .lte('stop_lon', lon + dLon)
+    .in('authority', ALLOWED_AUTHORITIES)
+    .limit(400);
+  if (error) throw error;
+
+  type RawNearby = RawStop & { authority: string | null };
+  const scored: { stop: TransportStop; distanceMeters: number }[] = [];
+  for (const s of (data ?? []) as RawNearby[]) {
+    const d = haversineMeters(lat, lon, Number(s.stop_lat), Number(s.stop_lon));
+    if (d <= maxMeters) scored.push({ stop: mapStop(s), distanceMeters: d });
+  }
+  scored.sort((a, b) => a.distanceMeters - b.distanceMeters);
+  return scored.slice(0, limit);
+}
+
+/**
+ * Find direct (single-vehicle) transit rides from `origin` to `destination`,
+ * departing at/after `reference` date. Returns at most `limit` rides,
+ * de-duplicated by route+direction.
+ */
+export async function findDirectTransitRides(
+  origin: { latitude: number; longitude: number },
+  destination: { latitude: number; longitude: number },
+  reference: Date,
+  limit = 5,
+): Promise<GtfsTransitRide[]> {
+  const nowMin = minutesFromMidnight(reference);
+
+  // 1. Closest stops on each side.
+  const [originStopsScored, destStopsScored] = await Promise.all([
+    findNearbyStops(origin.latitude, origin.longitude, {
+      maxMeters: 900,
+      limit: 5,
+    }),
+    findNearbyStops(destination.latitude, destination.longitude, {
+      maxMeters: 900,
+      limit: 5,
+    }),
+  ]);
+  if (originStopsScored.length === 0 || destStopsScored.length === 0) return [];
+
+  const originStopIds = originStopsScored.map((s) => Number(s.stop.id));
+  const destStopIds = destStopsScored.map((s) => Number(s.stop.id));
+  const walkFromByStop = new Map<number, number>(
+    originStopsScored.map((s) => [Number(s.stop.id), s.distanceMeters]),
+  );
+  const walkToByStop = new Map<number, number>(
+    destStopsScored.map((s) => [Number(s.stop.id), s.distanceMeters]),
+  );
+
+  // 2. stop_times at origin stops (boarding candidates).
+  const { data: fromRows, error: fromErr } = await supabase
+    .from(STOP_TIMES_TABLE)
+    .select('trip_id, stop_id, stop_sequence, departure_time, arrival_time')
+    .in('stop_id', originStopIds)
+    .limit(6000);
+  if (fromErr) throw fromErr;
+  const fromAtStop = (fromRows ?? []) as {
+    trip_id: number;
+    stop_id: number;
+    stop_sequence: number;
+    departure_time: string | null;
+    arrival_time: string | null;
+  }[];
+  if (fromAtStop.length === 0) return [];
+
+  // Dedupe candidate trip ids.
+  const candidateTripIds = Array.from(
+    new Set(fromAtStop.map((r) => r.trip_id)),
+  );
+
+  // 3. stop_times at destination stops filtered to those candidate trips.
+  const CHUNK = 300;
+  const toAtStopByTrip = new Map<
+    number,
+    {
+      stop_id: number;
+      stop_sequence: number;
+      arrival_time: string | null;
+      departure_time: string | null;
+    }[]
+  >();
+  for (let i = 0; i < candidateTripIds.length; i += CHUNK) {
+    const slice = candidateTripIds.slice(i, i + CHUNK);
+    const { data: toRows, error: toErr } = await supabase
+      .from(STOP_TIMES_TABLE)
+      .select('trip_id, stop_id, stop_sequence, arrival_time, departure_time')
+      .in('stop_id', destStopIds)
+      .in('trip_id', slice)
+      .limit(6000);
+    if (toErr) throw toErr;
+    for (const r of (toRows ?? []) as {
+      trip_id: number;
+      stop_id: number;
+      stop_sequence: number;
+      arrival_time: string | null;
+      departure_time: string | null;
+    }[]) {
+      const arr = toAtStopByTrip.get(r.trip_id) ?? [];
+      arr.push(r);
+      toAtStopByTrip.set(r.trip_id, arr);
+    }
+  }
+  if (toAtStopByTrip.size === 0) return [];
+
+  // Group boarding rows per trip.
+  const fromAtStopByTrip = new Map<
+    number,
+    {
+      stop_id: number;
+      stop_sequence: number;
+      departure_time: string | null;
+      arrival_time: string | null;
+    }[]
+  >();
+  for (const r of fromAtStop) {
+    const arr = fromAtStopByTrip.get(r.trip_id) ?? [];
+    arr.push(r);
+    fromAtStopByTrip.set(r.trip_id, arr);
+  }
+
+  // 4. Build candidate ride tuples.
+  interface Candidate {
+    tripId: number;
+    fromStopId: number;
+    toStopId: number;
+    fromSeq: number;
+    toSeq: number;
+    departureMinute: number;
+    arrivalMinute: number;
+    minutesUntil: number;
+  }
+  const cands: Candidate[] = [];
+  for (const [tripId, toRows] of toAtStopByTrip) {
+    const fromRowsForTrip = fromAtStopByTrip.get(tripId);
+    if (!fromRowsForTrip) continue;
+    for (const f of fromRowsForTrip) {
+      const depMin = parseGtfsTimeToMinutes(f.departure_time ?? f.arrival_time);
+      if (depMin == null) continue;
+      for (const t of toRows) {
+        if (t.stop_sequence <= f.stop_sequence) continue;
+        const arrMin = parseGtfsTimeToMinutes(t.arrival_time ?? t.departure_time);
+        if (arrMin == null || arrMin <= depMin) continue;
+        const normalized = depMin % 1440;
+        const minutesUntil = (normalized - nowMin + 1440) % 1440;
+        cands.push({
+          tripId,
+          fromStopId: f.stop_id,
+          toStopId: t.stop_id,
+          fromSeq: f.stop_sequence,
+          toSeq: t.stop_sequence,
+          departureMinute: normalized,
+          arrivalMinute: arrMin % 1440,
+          minutesUntil,
+        });
+      }
+    }
+  }
+  if (cands.length === 0) return [];
+
+  cands.sort((a, b) => a.minutesUntil - b.minutesUntil);
+
+  // 5. Fetch trip + route metadata (only for best N unique trips).
+  const TRIMMED = cands.slice(0, 200);
+  const uniqueTripIds = Array.from(new Set(TRIMMED.map((c) => c.tripId)));
+  const tripById = new Map<number, RawTrip>();
+  for (let i = 0; i < uniqueTripIds.length; i += CHUNK) {
+    const slice = uniqueTripIds.slice(i, i + CHUNK);
+    const { data: trips, error: tErr } = await supabase
+      .from(TRIPS_TABLE)
+      .select('trip_id, route_id, direction_code, trip_headsign, trip_long_name')
+      .in('trip_id', slice);
+    if (tErr) throw tErr;
+    for (const t of (trips ?? []) as RawTrip[]) tripById.set(t.trip_id, t);
+  }
+  const routeIds = Array.from(
+    new Set(Array.from(tripById.values()).map((t) => t.route_id)),
+  );
+  const routeById = new Map<string, TransportRoute>();
+  for (let i = 0; i < routeIds.length; i += CHUNK) {
+    const slice = routeIds.slice(i, i + CHUNK);
+    const { data: routes, error: rErr } = await supabase
+      .from(ROUTES_TABLE)
+      .select(
+        'route_id, route_short_name, route_long_name, route_type, route_color, competent_authority',
+      )
+      .in('route_id', slice)
+      .in('competent_authority', ALLOWED_AUTHORITIES);
+    if (rErr) throw rErr;
+    for (const r of (routes ?? []) as RawRoute[]) {
+      routeById.set(r.route_id, mapRoute(r));
+    }
+  }
+
+  // 6. Fetch stop records for from/to pairs to populate names.
+  const needStopIds = Array.from(
+    new Set([
+      ...TRIMMED.map((c) => c.fromStopId),
+      ...TRIMMED.map((c) => c.toStopId),
+    ]),
+  );
+  const stopById = new Map<number, TransportStop>();
+  for (let i = 0; i < needStopIds.length; i += CHUNK) {
+    const slice = needStopIds.slice(i, i + CHUNK);
+    const { data: stops, error: sErr } = await supabase
+      .from(STOPS_TABLE)
+      .select('stop_id, stop_name, stop_lat, stop_lon, alias')
+      .in('stop_id', slice);
+    if (sErr) throw sErr;
+    for (const s of (stops ?? []) as RawStop[]) stopById.set(s.stop_id, mapStop(s));
+  }
+
+  // 7. Keep the N best rides, dedup by (route, direction, from_stop).
+  const seen = new Set<string>();
+  const rides: GtfsTransitRide[] = [];
+  for (const c of TRIMMED) {
+    if (rides.length >= limit) break;
+    const trip = tripById.get(c.tripId);
+    if (!trip) continue;
+    const route = routeById.get(trip.route_id);
+    if (!route) continue; // out-of-scope operator
+    const fromStop = stopById.get(c.fromStopId);
+    const toStop = stopById.get(c.toStopId);
+    if (!fromStop || !toStop) continue;
+    const key = `${route.id}:${trip.direction_code ?? '?'}:${fromStop.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const ride: GtfsTransitRide = {
+      route,
+      trip: mapTrip(trip),
+      fromStop,
+      toStop,
+      departureMinute: c.departureMinute,
+      arrivalMinute: c.arrivalMinute,
+      rideMinutes: (c.arrivalMinute - c.departureMinute + 1440) % 1440,
+      walkFromMeters: walkFromByStop.get(c.fromStopId) ?? 0,
+      walkToMeters: walkToByStop.get(c.toStopId) ?? 0,
+      intermediateStops: [],
+      stopsCount: Math.max(2, c.toSeq - c.fromSeq + 1),
+    };
+    rides.push(ride);
+  }
+
+  // 8. Enrich intermediate stops for top rides (bounded — each takes 2 queries).
+  const TOP_FOR_DETAIL = Math.min(3, rides.length);
+  for (let i = 0; i < TOP_FOR_DETAIL; i++) {
+    const ride = rides[i];
+    const c = TRIMMED.find(
+      (x) =>
+        x.tripId === Number(ride.trip.id) &&
+        x.fromStopId === Number(ride.fromStop.id) &&
+        x.toStopId === Number(ride.toStop.id),
+    );
+    if (!c) continue;
+    const { data: seqRows } = await supabase
+      .from(STOP_TIMES_TABLE)
+      .select('stop_id, stop_sequence')
+      .eq('trip_id', Number(ride.trip.id))
+      .gt('stop_sequence', c.fromSeq)
+      .lt('stop_sequence', c.toSeq)
+      .order('stop_sequence');
+    const seqs = (seqRows ?? []) as { stop_id: number; stop_sequence: number }[];
+    if (seqs.length === 0) continue;
+    const ids = Array.from(new Set(seqs.map((s) => s.stop_id)));
+    const { data: midStops } = await supabase
+      .from(STOPS_TABLE)
+      .select('stop_id, stop_name')
+      .in('stop_id', ids);
+    const nameById = new Map<number, string>();
+    for (const s of (midStops ?? []) as { stop_id: number; stop_name: string }[]) {
+      nameById.set(s.stop_id, s.stop_name);
+    }
+    ride.intermediateStops = seqs
+      .map((s) => nameById.get(s.stop_id))
+      .filter((n): n is string => !!n);
+  }
+
+  return rides;
+}
+

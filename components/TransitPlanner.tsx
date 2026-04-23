@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Pressable, ScrollView, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
@@ -32,11 +32,13 @@ import {
 import {
   allTransitLines,
   buildTransitOptions,
+  buildTransitOptionsFromGtfs,
   formatDistance,
   formatDuration,
   type TransitOption,
   type TransitSegment,
 } from '@/lib/routing';
+import { findDirectTransitRides } from '@/lib/transport';
 import {
   totalDistanceMeters,
   totalTravelSeconds,
@@ -129,7 +131,8 @@ export function TransitPlanner({
     [stops],
   );
 
-  const allOptions = useMemo(
+  // Synthetic baseline — used if GTFS finds no direct rides (fallback UX).
+  const syntheticOptions = useMemo(
     () =>
       travelSeconds > 0
         ? buildTransitOptions(
@@ -141,6 +144,73 @@ export function TransitPlanner({
           )
         : [],
     [travelSeconds, distanceMeters, originLabel, destLabel, viaStops],
+  );
+
+  // GTFS-derived real bus options based on origin / destination coordinates.
+  const [gtfsOptions, setGtfsOptions] = useState<TransitOption[]>([]);
+  const [gtfsLoading, setGtfsLoading] = useState(false);
+
+  const firstStop = stops[0];
+  const lastStop = stops[stops.length - 1];
+  const originLat = firstStop?.latitude ?? 0;
+  const originLon = firstStop?.longitude ?? 0;
+  const destLat = lastStop?.latitude ?? 0;
+  const destLon = lastStop?.longitude ?? 0;
+
+  useEffect(() => {
+    if (
+      !originLat ||
+      !originLon ||
+      !destLat ||
+      !destLon ||
+      stops.length < 2
+    ) {
+      setGtfsOptions([]);
+      return;
+    }
+    let cancelled = false;
+    setGtfsLoading(true);
+    (async () => {
+      try {
+        const rides = await findDirectTransitRides(
+          { latitude: originLat, longitude: originLon },
+          { latitude: destLat, longitude: destLon },
+          selectedDate,
+          6,
+        );
+        if (cancelled) return;
+        const opts = buildTransitOptionsFromGtfs(
+          rides,
+          originLabel,
+          destLabel,
+          selectedDate,
+          viaStops,
+        );
+        setGtfsOptions(opts);
+      } catch {
+        if (!cancelled) setGtfsOptions([]);
+      } finally {
+        if (!cancelled) setGtfsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    originLat,
+    originLon,
+    destLat,
+    destLon,
+    stops.length,
+    selectedDate,
+    originLabel,
+    destLabel,
+    viaStops,
+  ]);
+
+  const allOptions = useMemo(
+    () => (gtfsOptions.length > 0 ? gtfsOptions : syntheticOptions),
+    [gtfsOptions, syntheticOptions],
   );
 
   const availableLines = useMemo(() => allTransitLines(allOptions), [allOptions]);
@@ -535,12 +605,15 @@ export function TransitPlanner({
           contentContainerStyle={{ paddingVertical: 12 }}
           showsVerticalScrollIndicator={false}
         >
-          {loadingRoute && filteredOptions.length === 0 ? (
+          {(loadingRoute || gtfsLoading) && filteredOptions.length === 0 ? (
             <View className="mx-4 rounded-2xl bg-muted p-4">
               <Text className="text-sm text-muted-foreground">Ищем варианты…</Text>
             </View>
           ) : null}
-          {!loadingRoute && filteredOptions.length === 0 && allOptions.length > 0 ? (
+          {!loadingRoute &&
+          !gtfsLoading &&
+          filteredOptions.length === 0 &&
+          allOptions.length > 0 ? (
             <View className="mx-4 rounded-2xl bg-muted p-4">
               <Text className="text-sm text-muted-foreground">
                 Нет вариантов с выбранными маршрутами. Снимите фильтры.
