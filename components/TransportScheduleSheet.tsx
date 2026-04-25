@@ -779,20 +779,36 @@ function RouteDirectionsView({
 }) {
   const [route, setRoute] = useState<TransportRoute | null>(null);
   const [trips, setTrips] = useState<TransportTrip[]>([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    Promise.all([fetchRoute(routeId), fetchRouteTrips(routeId)]).then(
-      ([r, t]) => {
+    setLoading(true);
+    Promise.all([fetchRoute(routeId), fetchRouteTrips(routeId)])
+      .then(([r, t]) => {
         setRoute(r);
         setTrips(t);
-      },
-    );
+      })
+      .catch(() => {
+        setRoute(null);
+        setTrips([]);
+      })
+      .finally(() => setLoading(false));
   }, [routeId]);
 
-  if (!route) {
+  if (loading) {
     return (
       <View className="flex-1 items-center justify-center">
         <ActivityIndicator />
+      </View>
+    );
+  }
+
+  if (!route) {
+    return (
+      <View className="flex-1 items-center justify-center px-8">
+        <Text className="text-center text-base text-muted-foreground">
+          Маршрут не найден или данные временно недоступны
+        </Text>
       </View>
     );
   }
@@ -857,6 +873,7 @@ function RouteStopsView({
   const [route, setRoute] = useState<TransportRoute | null>(null);
   const [trip, setTrip] = useState<TransportTrip | null>(null);
   const [stops, setStops] = useState<RouteStopListItem[]>([]);
+  const [stopsLoading, setStopsLoading] = useState(true);
   const [mapStopArrivals, setMapStopArrivals] =
     useState<NextArrival[] | null>(null);
   const [mapSelectedStop, setMapSelectedStop] = useState<TransportStop | null>(
@@ -865,15 +882,23 @@ function RouteStopsView({
   const [mapStopRoutes, setMapStopRoutes] = useState<TransportRoute[]>([]);
 
   useEffect(() => {
+    setStopsLoading(true);
     Promise.all([
       fetchRoute(routeId),
       fetchRouteTrips(routeId),
       fetchTripStops(tripId),
-    ]).then(([r, ts, sts]) => {
-      setRoute(r);
-      setTrip(ts.find((x) => x.id === tripId) ?? null);
-      setStops(sts);
-    });
+    ])
+      .then(([r, ts, sts]) => {
+        setRoute(r);
+        setTrip(ts.find((x) => x.id === tripId) ?? null);
+        setStops(sts);
+      })
+      .catch(() => {
+        setRoute(null);
+        setTrip(null);
+        setStops([]);
+      })
+      .finally(() => setStopsLoading(false));
   }, [routeId, tripId]);
 
   const handleStopMarkerPress = useCallback(
@@ -966,10 +991,20 @@ function RouteStopsView({
     [stops, color],
   );
 
-  if (!route || !trip) {
+  if (stopsLoading) {
     return (
       <View className="flex-1 items-center justify-center">
         <ActivityIndicator />
+      </View>
+    );
+  }
+
+  if (!route || !trip) {
+    return (
+      <View className="flex-1 items-center justify-center px-8">
+        <Text className="text-center text-base text-muted-foreground">
+          Данные маршрута временно недоступны
+        </Text>
       </View>
     );
   }
@@ -1200,10 +1235,20 @@ function StopDetailView({
     })();
   }, [stopId, routeId, tripId, serviceDay]);
 
-  if (loading || !stop) {
+  if (loading) {
     return (
       <View className="flex-1 items-center justify-center">
         <ActivityIndicator />
+      </View>
+    );
+  }
+
+  if (!stop) {
+    return (
+      <View className="flex-1 items-center justify-center px-8">
+        <Text className="text-center text-base text-muted-foreground">
+          Остановка не найдена или данные временно недоступны
+        </Text>
       </View>
     );
   }
@@ -1372,21 +1417,37 @@ function StopScheduleView({
 }) {
   const [route, setRoute] = useState<TransportRoute | null>(null);
   const [stops, setStops] = useState<RouteStopListItem[]>([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    Promise.all([fetchRoute(routeId), fetchTripStops(tripId)]).then(
-      ([r, s]) => {
+    setLoading(true);
+    Promise.all([fetchRoute(routeId), fetchTripStops(tripId)])
+      .then(([r, s]) => {
         setRoute(r);
         setStops(s);
-      },
-    );
+      })
+      .catch(() => {
+        setRoute(null);
+        setStops([]);
+      })
+      .finally(() => setLoading(false));
   }, [routeId, tripId]);
+
+  if (loading) {
+    return (
+      <View className="flex-1 items-center justify-center">
+        <ActivityIndicator />
+      </View>
+    );
+  }
 
   const selectedStop = stops.find((s) => s.stop.id === stopId);
   if (!route || !selectedStop) {
     return (
-      <View className="flex-1 items-center justify-center">
-        <ActivityIndicator />
+      <View className="flex-1 items-center justify-center px-8">
+        <Text className="text-center text-base text-muted-foreground">
+          Данные расписания временно недоступны
+        </Text>
       </View>
     );
   }
@@ -1468,17 +1529,36 @@ function StopArrivalsView({ stopId }: { stopId: string }) {
   const [stop, setStop] = useState<TransportStop | null>(null);
   const [arrivals, setArrivals] = useState<NextArrival[] | null>(null);
   const [routes, setRoutes] = useState<TransportRoute[]>([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetchStopById(stopId).then(setStop);
-    fetchRoutesAtStop(stopId).then(setRoutes);
-    fetchNextArrivals(stopId, new Date(), 20).then(setArrivals);
+    setLoading(true);
+    Promise.all([
+      fetchStopById(stopId).catch(() => null),
+      fetchRoutesAtStop(stopId).catch(() => []),
+      fetchNextArrivals(stopId, new Date(), 20).catch(() => []),
+    ]).then(([s, r, a]) => {
+      setStop(s);
+      setRoutes(r as TransportRoute[]);
+      setArrivals(a as NextArrival[]);
+      setLoading(false);
+    });
   }, [stopId]);
 
-  if (!stop) {
+  if (loading) {
     return (
       <View className="flex-1 items-center justify-center">
         <ActivityIndicator />
+      </View>
+    );
+  }
+
+  if (!stop) {
+    return (
+      <View className="flex-1 items-center justify-center px-8">
+        <Text className="text-center text-base text-muted-foreground">
+          Остановка не найдена или данные временно недоступны
+        </Text>
       </View>
     );
   }
