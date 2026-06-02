@@ -20,6 +20,7 @@ import { Text } from '@/components/ui/text';
 import {
   fetchRoute,
   matchDrawnRoute,
+  matchDrawnStrokes,
   midpointOfLine,
   type GeocodeResult,
   type TransitOption,
@@ -552,77 +553,99 @@ export default function Home() {
     setPlannerCollapsed(false);
   };
 
+  const applyMatchedRoute = async (matched: {
+    coordinates: { latitude: number; longitude: number }[];
+    distanceMeters: number;
+    durationSeconds: number;
+  }) => {
+    if (matched.coordinates.length < 2) {
+      Alert.alert('Не удалось', 'Не получилось распознать маршрут');
+      return;
+    }
+
+    // Case A — drawing for a specific destination stop (partial route)
+    if (drawTargetStopId) {
+      const currentStops = useTripStore.getState().stops;
+      const toIdx = currentStops.findIndex((s) => s.id === drawTargetStopId);
+      if (toIdx <= 0) {
+        setDrawTargetStopId(null);
+        setDrawing(false);
+        return;
+      }
+      const fromStop = currentStops[toIdx - 1];
+      const toStop = currentStops[toIdx];
+      addDrawnRoute({
+        fromStopId: fromStop.id,
+        toStopId: toStop.id,
+        coordinates: matched.coordinates,
+        distanceMeters: matched.distanceMeters,
+        durationSeconds: matched.durationSeconds,
+        partial: true,
+      });
+      // Preserve the currently selected transport mode — the user may have
+      // drawn a bus override, a driving override, etc. Do NOT force walking.
+      setDrawTargetStopId(null);
+      setDrawing(false);
+      setPlannerCollapsed(true);
+      return;
+    }
+
+    // Case B — fresh drawn trip (2 stops, full override)
+    const first = matched.coordinates[0];
+    const last = matched.coordinates[matched.coordinates.length - 1];
+    clearStops();
+    // Keep whatever mode is currently selected — the drawn polyline should
+    // render using the same style rules as any other leg (dashed for
+    // walking, solid for driving/transit/cycling). Forcing walking here
+    // would visually "highlight" the drawn route differently from the
+    // rest, which is exactly what we don't want.
+    setOriginToPlace({
+      label: 'Начало маршрута',
+      latitude: first.latitude,
+      longitude: first.longitude,
+    });
+    addStop({
+      label: 'Конец маршрута',
+      latitude: last.latitude,
+      longitude: last.longitude,
+    });
+    const newStops = useTripStore.getState().stops;
+    if (newStops.length >= 2) {
+      setDrawnRoutes([
+        {
+          fromStopId: newStops[0].id,
+          toStopId: newStops[1].id,
+          coordinates: matched.coordinates,
+          distanceMeters: matched.distanceMeters,
+          durationSeconds: matched.durationSeconds,
+        },
+      ]);
+    }
+    setDrawing(false);
+    setPlannerCollapsed(true);
+  };
+
   const handleConfirmDrawing = async (
     coords: { latitude: number; longitude: number }[],
   ) => {
     setDrawProcessing(true);
     try {
       const matched = await matchDrawnRoute(coords, mode);
-      if (matched.coordinates.length < 2) {
-        Alert.alert('Не удалось', 'Не получилось распознать маршрут');
-        return;
-      }
+      await applyMatchedRoute(matched);
+    } catch {
+      Alert.alert('Ошибка', 'Не удалось построить маршрут по рисунку');
+    } finally {
+      setDrawProcessing(false);
+    }
+  };
 
-      // Case A — drawing for a specific destination stop (partial route)
-      if (drawTargetStopId) {
-        const currentStops = useTripStore.getState().stops;
-        const toIdx = currentStops.findIndex((s) => s.id === drawTargetStopId);
-        if (toIdx <= 0) {
-          setDrawTargetStopId(null);
-          setDrawing(false);
-          return;
-        }
-        const fromStop = currentStops[toIdx - 1];
-        const toStop = currentStops[toIdx];
-        addDrawnRoute({
-          fromStopId: fromStop.id,
-          toStopId: toStop.id,
-          coordinates: matched.coordinates,
-          distanceMeters: matched.distanceMeters,
-          durationSeconds: matched.durationSeconds,
-          partial: true,
-        });
-        // Preserve the currently selected transport mode — the user may have
-        // drawn a bus override, a driving override, etc. Do NOT force walking.
-        setDrawTargetStopId(null);
-        setDrawing(false);
-        setPlannerCollapsed(true);
-        return;
-      }
-
-      // Case B — fresh drawn trip (2 stops, full override)
-      const first = matched.coordinates[0];
-      const last = matched.coordinates[matched.coordinates.length - 1];
-      clearStops();
-      // Keep whatever mode is currently selected — the drawn polyline should
-      // render using the same style rules as any other leg (dashed for
-      // walking, solid for driving/transit/cycling). Forcing walking here
-      // would visually "highlight" the drawn route differently from the
-      // rest, which is exactly what we don't want.
-      setOriginToPlace({
-        label: 'Начало маршрута',
-        latitude: first.latitude,
-        longitude: first.longitude,
-      });
-      addStop({
-        label: 'Конец маршрута',
-        latitude: last.latitude,
-        longitude: last.longitude,
-      });
-      const newStops = useTripStore.getState().stops;
-      if (newStops.length >= 2) {
-        setDrawnRoutes([
-          {
-            fromStopId: newStops[0].id,
-            toStopId: newStops[1].id,
-            coordinates: matched.coordinates,
-            distanceMeters: matched.distanceMeters,
-            durationSeconds: matched.durationSeconds,
-          },
-        ]);
-      }
-      setDrawing(false);
-      setPlannerCollapsed(true);
+  const handleConfirmDrawingStrokes = async (
+    strokes: { latitude: number; longitude: number }[][],
+  ) => {
+    setDrawProcessing(true);
+    try {
+      const matched = await matchDrawnStrokes(strokes, mode);
+      await applyMatchedRoute(matched);
     } catch {
       Alert.alert('Ошибка', 'Не удалось построить маршрут по рисунку');
     } finally {
@@ -935,6 +958,7 @@ export default function Home() {
           onRegionChange={setRegion}
           onCancel={handleCancelDrawing}
           onConfirm={handleConfirmDrawing}
+          onConfirmStrokes={handleConfirmDrawingStrokes}
           processing={drawProcessing}
           partial={drawTargetStopId !== null}
         />

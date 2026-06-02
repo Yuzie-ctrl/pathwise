@@ -9,6 +9,9 @@ interface DrawCanvasProps {
   region: MapRegion;
   onCancel: () => void;
   onConfirm: (coords: { latitude: number; longitude: number }[]) => void;
+  onConfirmStrokes?: (
+    strokes: { latitude: number; longitude: number }[][],
+  ) => void;
   onRegionChange?: (region: MapRegion) => void;
   processing?: boolean;
   partial?: boolean;
@@ -33,6 +36,7 @@ export function DrawCanvas({
   region,
   onCancel,
   onConfirm,
+  onConfirmStrokes,
   processing,
   partial,
 }: DrawCanvasProps) {
@@ -251,11 +255,16 @@ export function DrawCanvas({
   // --- Actions -----------------------------------------------------------
 
   const handleConfirm = () => {
-    const flat = strokes.flat();
-    const extra = currentStrokeRef.current.map((p) =>
-      pxToLatLng(p.x, p.y),
-    );
-    const all = [...flat, ...extra];
+    const extra = currentStrokeRef.current.map((p) => pxToLatLng(p.x, p.y));
+    const allStrokes = [...strokes];
+    if (extra.length >= 2) allStrokes.push(extra);
+    const usable = allStrokes.filter((s) => s.length >= 2);
+    if (usable.length === 0) return;
+    if (onConfirmStrokes) {
+      onConfirmStrokes(usable);
+      return;
+    }
+    const all = usable.flat();
     if (all.length < 2) return;
     onConfirm(all);
   };
@@ -392,11 +401,11 @@ export function DrawCanvas({
           <Text className="flex-1 text-sm text-foreground">
             {hasDrawn
               ? partial
-                ? 'ИИ подстроит линию под реальные дороги. Можете нарисовать часть или весь маршрут'
-                : 'ИИ подстроит линию под реальные дороги'
+                ? 'ИИ подстроит линии под дороги и соединит части по дорогам'
+                : 'ИИ подстроит линии под дороги и соединит части по дорогам'
               : partial
-                ? 'Нарисуйте часть или весь маршрут до точки. ИИ подстроит под дороги'
-                : 'Рисуйте одним пальцем · двумя — двигайте, колёсико — зум'}
+                ? 'Нарисуйте часть или весь маршрут (можно несколькими линиями)'
+                : 'Рисуйте одним пальцем (можно несколько линий) · колёсико — зум'}
           </Text>
         </View>
       </View>

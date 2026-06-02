@@ -141,14 +141,22 @@ const OSRM_PROFILES: Record<TransportMode, string> = {
 // but for walking/cycling what matters is kilometers.
 //
 // Urban car  ≈ 40 km/h (signal-corrected)    = 11.1 m/s
-// Walking    ≈ 4.8 km/h (brisk)              =  1.33 m/s
+// Walking    ≈ 4 km/h (requested baseline)   =  1.111 m/s
 // Cycling    ≈ 15 km/h                       =  4.17 m/s
 // City bus   ≈ 22 km/h (stops + wait factored in later)
 const AVG_SPEED_MPS: Record<TransportMode, number> = {
   driving: 11.1,
-  walking: 1.33,
-  cycling: 4.17,
-  transit: 6.1,
+  walking: 1.111, // 4 km/h
+  cycling: 4.17, // 15 km/h
+  transit: 6.1, // ≈ 22 km/h effective
+};
+
+/** Average speeds in km/h, exposed for ETA labels / schedule calc. */
+export const AVG_SPEED_KMH: Record<TransportMode, number> = {
+  walking: 4,
+  cycling: 15,
+  driving: 40,
+  transit: 22,
 };
 
 interface OsrmRoute {
@@ -574,6 +582,99 @@ export async function matchDrawnRoute(
     coordinates: resampled,
     distanceMeters: rawDist,
     durationSeconds: rawDist / 8.3,
+  };
+}
+
+/**
+ * Match a *set* of freehand strokes into one continuous road-network route.
+ *
+ * The user may lift the finger between parts of the route. Each stroke is
+ * snapped to roads independently with `matchDrawnRoute` (so the small wiggles
+ * inside one stroke get straightened to the underlying road). The GAP between
+ * the end of one stroke and the start of the next is then routed ALONG the
+ * road network via OSRM `/route` (NOT a straight line), so the connector
+ * follows existing streets exactly like the point-to-point planner does.
+ *
+ * The result is a single stitched polyline with honest distance/duration.
+ */
+export async function matchDrawnStrokes(
+  strokes: { latitude: number; longitude: number }[][],
+  mode: TransportMode,
+  signal?: AbortSignal,
+): Promise<MatchedRoute> {
+  // Keep only strokes that actually have ≥ 2 points.
+  const usable = strokes.filter((s) => s.length >= 2);
+  if (usable.length === 0) {
+    return { coordinates: [], distanceMeters: 0, durationSeconds: 0 };
+  }
+  if (usable.length === 1) {
+    return matchDrawnRoute(usable[0], mode, signal);
+  }
+
+  const profile = OSRM_PROFILES[mode];
+  const speed = AVG_SPEED_MPS[mode] ?? AVG_SPEED_MPS.driving;
+
+  // 1) Snap each stroke to roads independently.
+  const matchedStrokes: MatchedRoute[] = [];
+  for (const stroke of usable) {
+    const m = await matchDrawnRoute(stroke, mode, signal);
+    if (m.coordinates.length >= 2) matchedStrokes.push(m);
+  }
+  if (matchedStrokes.length === 0) {
+    return { coordinates: [], distanceMeters: 0, durationSeconds: 0 };
+  }
+  if (matchedStrokes.length === 1) return matchedStrokes[0];
+
+  // 2) Stitch: stroke[0] → road-route gap → stroke[1] → road-route gap → …
+  const stitched: MatchedPoint[] = [];
+  let totalDist = 0;
+  let totalDur = 0;
+
+  const pushCoords = (coords: MatchedPoint[]) => {
+    for (const pt of coords) {
+      const last = stitched[stitched.length - 1];
+      if (
+        !last ||
+        Math.abs(last.latitude - pt.latitude) > 1e-7 ||
+        Math.abs(last.longitude - pt.longitude) > 1e-7
+      ) {
+        stitched.push(pt);
+      }
+    }
+  };
+
+  for (let i = 0; i < matchedStrokes.length; i++) {
+    const seg = matchedStrokes[i];
+    pushCoords(seg.coordinates);
+    totalDist += seg.distanceMeters;
+    totalDur += seg.durationSeconds;
+
+    // Connect this stroke's end to the next stroke's start ALONG the road.
+    if (i < matchedStrokes.length - 1) {
+      const from = seg.coordinates[seg.coordinates.length - 1];
+      const to = matchedStrokes[i + 1].coordinates[0];
+      // If endpoints are already nearly coincident, skip the connector.
+      if (haversine(from, to) > 8) {
+        const gap = await tryOsrmRoute(profile, from, to, signal);
+        if (gap.coordinates.length >= 2) {
+          pushCoords(gap.coordinates);
+          const gapDist =
+            gap.distance ?? routeDistanceMetersFlat(gap.coordinates);
+          totalDist += gapDist;
+          totalDur += Math.round(gapDist / speed);
+        }
+      }
+    }
+  }
+
+  if (stitched.length < 2) {
+    return matchedStrokes[0];
+  }
+
+  return {
+    coordinates: stitched,
+    distanceMeters: totalDist,
+    durationSeconds: totalDur || Math.round(totalDist / speed),
   };
 }
 

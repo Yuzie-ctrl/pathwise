@@ -15,6 +15,10 @@ interface DrawCanvasProps {
   region: MapRegion;
   onCancel: () => void;
   onConfirm: (coords: { latitude: number; longitude: number }[]) => void;
+  /** Receives each drawn stroke separately so gaps can be road-routed. */
+  onConfirmStrokes?: (
+    strokes: { latitude: number; longitude: number }[][],
+  ) => void;
   onRegionChange?: (region: MapRegion) => void;
   processing?: boolean;
   /** When true, the drawing will be used as a partial route to the current destination. */
@@ -35,6 +39,7 @@ export function DrawCanvas({
   region,
   onCancel,
   onConfirm,
+  onConfirmStrokes,
   processing,
   partial,
 }: DrawCanvasProps) {
@@ -157,9 +162,18 @@ export function DrawCanvas({
   );
 
   const handleConfirm = () => {
-    const flat = strokes.flat();
     const extra = currentStrokeRef.current.map((p) => pxToLatLng(p.x, p.y));
-    const all = [...flat, ...extra];
+    const allStrokes = [...strokes];
+    if (extra.length >= 2) allStrokes.push(extra);
+    const usable = allStrokes.filter((s) => s.length >= 2);
+    if (usable.length === 0) return;
+    // Prefer the stroke-aware callback so the planner can road-route the
+    // gaps between separate strokes instead of joining them with a line.
+    if (onConfirmStrokes) {
+      onConfirmStrokes(usable);
+      return;
+    }
+    const all = usable.flat();
     if (all.length < 2) return;
     onConfirm(all);
   };
@@ -273,11 +287,11 @@ export function DrawCanvas({
           <Text className="flex-1 text-sm text-foreground">
             {hasDrawn
               ? partial
-                ? 'ИИ подстроит линию под реальные дороги. Можете нарисовать часть или весь маршрут'
-                : 'ИИ подстроит линию под реальные дороги'
+                ? 'ИИ подстроит линии под дороги и соединит части по дорогам'
+                : 'ИИ подстроит линии под дороги и соединит части по дорогам'
               : partial
-                ? 'Нарисуйте часть или весь маршрут до точки. ИИ подстроит под дороги'
-                : 'Одним пальцем — рисуйте, двумя — двигайте и приближайте'}
+                ? 'Нарисуйте часть или весь маршрут (можно несколькими линиями)'
+                : 'Рисуйте одним пальцем (можно несколько линий), двумя — двигайте карту'}
           </Text>
         </View>
       </View>
