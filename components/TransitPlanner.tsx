@@ -1051,6 +1051,7 @@ function Timeline({
             key={`walk-${i}`}
             durationSec={seg.durationSeconds}
             distanceM={seg.distanceMeters}
+            toLabel={seg.to}
             onPress={() => onZoomToSegment(i)}
           />,
         );
@@ -1188,13 +1189,21 @@ function LocationRow({
 function WalkRow({
   durationSec,
   distanceM,
+  toLabel,
   onPress,
 }: {
   durationSec: number;
   distanceM: number;
+  toLabel?: string;
   onPress: () => void;
 }) {
   const minutes = Math.max(1, Math.round(durationSec / 60));
+  // Show where the walk leads (e.g. the bus stop name) so walk→bus alternation
+  // is legible: "Пешком 5 мин (300 м) · до ост. Sadama".
+  const dest =
+    toLabel && toLabel !== 'Остановка' && !/^Остановка/.test(toLabel)
+      ? toLabel
+      : null;
   return (
     <View className="flex-row">
       {/* Rail column: 4 gray dots like screenshot */}
@@ -1216,10 +1225,15 @@ function WalkRow({
         onPress={onPress}
         className="flex-1 flex-row items-center justify-between py-2 pr-2 active:bg-muted/30"
       >
-        <View className="flex-row items-center gap-3">
+        <View className="flex-1 flex-row items-center gap-3">
           <Footprints size={18} color="#666" />
-          <Text className="text-sm text-foreground">
+          <Text className="flex-1 text-sm text-foreground" numberOfLines={2}>
             Пешком {minutes} мин. ({formatDistance(distanceM)})
+            {dest ? (
+              <Text className="text-sm text-muted-foreground">
+                {' '}· до ост. {dest}
+              </Text>
+            ) : null}
           </Text>
         </View>
         <ChevronRight size={18} color="#999" />

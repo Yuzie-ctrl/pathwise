@@ -26,6 +26,9 @@ interface DrawCanvasProps {
   partial?: boolean;
   /** Preload existing drawn strokes for editing. */
   initialStrokes?: LatLng[][];
+  /** Called when the user confirms with NO strokes left (erased everything)
+   *  while editing — lets the parent drop all drawn overrides. */
+  onClearAll?: () => void;
 }
 
 const STROKE_COLORS = [
@@ -61,6 +64,7 @@ export function DrawCanvas({
   processing,
   partial,
   initialStrokes,
+  onClearAll,
 }: DrawCanvasProps) {
   const [size, setSize] = useState<{ width: number; height: number }>({
     width: 0,
@@ -220,7 +224,14 @@ export function DrawCanvas({
     const allStrokes = [...strokes];
     if (extra.length >= 2) allStrokes.push(extra);
     const usable = allStrokes.filter((s) => s.length >= 2);
-    if (usable.length === 0) return;
+    if (usable.length === 0) {
+      // Nothing left — if we started from an existing route (editing), this
+      // means "erase everything"; let the parent drop all drawn overrides.
+      if (seededRef.current && onClearAll) {
+        onClearAll();
+      }
+      return;
+    }
     if (onConfirmStrokes) {
       onConfirmStrokes(usable);
       return;
@@ -345,27 +356,28 @@ export function DrawCanvas({
         </Svg>
       ) : null}
 
-      {/* Tappable number badges (to reorder) — separate touchable layer */}
-      {mode === 'draw' &&
-        strokePaths.map((sp, idx) => (
-          <Pressable
-            key={`b${idx}`}
-            onPress={() => setReorderIdx(idx)}
-            style={{
-              position: 'absolute',
-              left: sp.label.x - 16,
-              top: sp.label.y - 16,
-              width: 32,
-              height: 32,
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            <Text className="text-xs font-bold" style={{ color: '#fff' }}>
-              {idx + 1}
-            </Text>
-          </Pressable>
-        ))}
+      {/* Number badges. In draw mode they are tappable (reorder); in erase
+          mode they are non-interactive but the digit must still be visible. */}
+      {strokePaths.map((sp, idx) => (
+        <Pressable
+          key={`b${idx}`}
+          onPress={mode === 'draw' ? () => setReorderIdx(idx) : undefined}
+          pointerEvents={mode === 'draw' ? 'auto' : 'none'}
+          style={{
+            position: 'absolute',
+            left: sp.label.x - 16,
+            top: sp.label.y - 16,
+            width: 32,
+            height: 32,
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          <Text className="text-xs font-bold" style={{ color: '#fff' }}>
+            {idx + 1}
+          </Text>
+        </Pressable>
+      ))}
 
       {/* Top instruction banner */}
       <View
@@ -441,16 +453,16 @@ export function DrawCanvas({
 
         <Pressable
           onPress={handleConfirm}
-          disabled={!hasDrawn || processing}
+          disabled={(!hasDrawn && !(seededRef.current && !!onClearAll)) || processing}
           className={`flex-1 flex-row items-center justify-center gap-2 rounded-2xl py-3 ${
-            hasDrawn && !processing ? 'bg-primary' : 'bg-muted'
+            (hasDrawn || (seededRef.current && !!onClearAll)) && !processing ? 'bg-primary' : 'bg-muted'
           }`}
           style={btnShadow}
         >
-          <Check size={18} color={hasDrawn && !processing ? '#fff' : '#999'} />
+          <Check size={18} color={(hasDrawn || (seededRef.current && !!onClearAll)) && !processing ? '#fff' : '#999'} />
           <Text
             className={`text-base font-semibold ${
-              hasDrawn && !processing
+              (hasDrawn || (seededRef.current && !!onClearAll)) && !processing
                 ? 'text-primary-foreground'
                 : 'text-muted-foreground'
             }`}

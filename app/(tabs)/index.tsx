@@ -20,13 +20,18 @@ import { TransportScheduleSheet } from '@/components/TransportScheduleSheet';
 import { Text } from '@/components/ui/text';
 import {
   applyAmbiguityChoice,
+  buildTransitLegsFromStops,
+  computePostConnectorVariants,
   detectAmbiguousSpot,
   fetchRoute,
+  formatDistance,
+  formatDuration,
   matchDrawnRoute,
   matchDrawnStrokes,
   midpointOfLine,
   type GeocodeResult,
   type MatchedRoute,
+  type PostConnectorVariants,
   type RouteAmbiguity,
   type TransitOption,
 } from '@/lib/routing';
@@ -123,6 +128,18 @@ export default function Home() {
   /** True while the transit planner is peeked down to reveal the drawn route. */
   const [transitPeeking, setTransitPeeking] = useState(false);
   const drawnStrokesAdapted = useTripStore((s) => s.drawnStrokesAdapted);
+
+  /**
+   * Post-connector chooser for a partial drawing: two ways to finish from the
+   * drawing end to the destination (a possibly-U-turning shortest route vs a
+   * straight-ahead longer one). Tapping a card commits that choice.
+   */
+  const [postChooser, setPostChooser] = useState<{
+    fromStopId: string;
+    toStopId: string;
+    variants: PostConnectorVariants;
+    choice: 'uturn' | 'forward';
+  } | null>(null);
 
   const routeReqRef = useRef(0);
 
@@ -292,25 +309,44 @@ export default function Home() {
   // ---------------------------------------------------------------------
   const style = MODE_STYLE[mode];
 
-  /** Set of logical segment indices that are user-drawn overrides. */
-  const drawnSegmentIndices = useMemo(() => {
-    const set = new Set<number>();
-    if (drawnRoutes.length === 0) return set;
-    for (let i = 0; i < stops.length - 1; i++) {
-      const from = stops[i];
-      const to = stops[i + 1];
-      if (
-        drawnRoutes.some(
-          (r) => r.fromStopId === from.id && r.toStopId === to.id,
-        )
-      ) {
-        set.add(i);
-      }
-    }
-    return set;
-  }, [drawnRoutes, stops]);
-
   const polylines: MapPolyline[] = useMemo(() => {
+    // While the post-connector chooser is open, overlay BOTH completion
+    // variants: the non-chosen one in gray, the chosen one highlighted.
+    if (postChooser) {
+      const out: MapPolyline[] = [];
+      // Underlying computed legs stay visible (drawn stretch + pre connector).
+      legs.forEach((leg, i) => {
+        const legStyle = MODE_STYLE[leg.mode ?? mode];
+        out.push({
+          id: `pc-base-${i}`,
+          coordinates: leg.coordinates,
+          strokeColor: leg.drawn ? '#ec4899' : legStyle.color,
+          strokeWidth: leg.drawn ? legStyle.width + 1 : legStyle.width,
+          lineDashPattern: legStyle.dashed ? [8, 6] : undefined,
+        });
+      });
+      const other = postChooser.choice === 'uturn' ? 'forward' : 'uturn';
+      const otherV = postChooser.variants[other];
+      const chosenV = postChooser.variants[postChooser.choice];
+      if (otherV.coordinates.length >= 2) {
+        out.push({
+          id: 'pc-other',
+          coordinates: otherV.coordinates,
+          strokeColor: '#9ca3af',
+          strokeWidth: 5,
+          lineDashPattern: [10, 8],
+        });
+      }
+      if (chosenV.coordinates.length >= 2) {
+        out.push({
+          id: 'pc-chosen',
+          coordinates: chosenV.coordinates,
+          strokeColor: '#2563eb',
+          strokeWidth: 6,
+        });
+      }
+      return out;
+    }
     // While the ambiguity prompt is open, show ONLY the active variant span
     // (zoomed-in) so the user can clearly compare options.
     if (ambiguity) {
@@ -367,20 +403,19 @@ export default function Home() {
       return [];
     }
     return legs.map((leg, i) => {
-      const segIdx = leg.segmentIndex ?? i;
-      const isDrawn = drawnSegmentIndices.has(segIdx);
+      const isDrawn = !!leg.drawn;
       const legStyle = MODE_STYLE[leg.mode ?? mode];
       return {
         id: `leg-${i}`,
         coordinates: leg.coordinates,
-        // Drawn segments get a distinct highlight color so the user can see
-        // exactly which part of the route they hand-drew.
+        // Only the actually hand-drawn stretch is highlighted; the road-routed
+        // connectors before/after a partial drawing keep the normal mode color.
         strokeColor: isDrawn ? '#ec4899' : legStyle.color,
         strokeWidth: isDrawn ? legStyle.width + 1 : legStyle.width,
         lineDashPattern: legStyle.dashed ? [8, 6] : undefined,
       };
     });
-  }, [legs, stops, style, mode, drawing, ambiguity, drawnSegmentIndices, transitPeeking, drawnStrokesAdapted]);
+  }, [legs, stops, style, mode, drawing, ambiguity, postChooser, transitPeeking, drawnStrokesAdapted]);
 
   const markers: MapMarker[] = useMemo(() => {
     const out: MapMarker[] = [];
@@ -432,24 +467,29 @@ export default function Home() {
       });
     });
 
-    // Numbered segment badges — place at midpoint of each logical segment
-    // (all legs with the same segmentIndex are combined, so partial-draw
-    // segments don't get 3 badges).
-    const segments = new Map<number, { latitude: number; longitude: number }[]>();
+    // Numbered segment badges — place at midpoint of each logical segment.
+    // When a segment contains a hand-drawn sub-leg, anchor the badge to that
+    // drawn stretch and color it pink so the user sees which part is drawn.
+    const segments = new Map<
+      number,
+      { coords: { latitude: number; longitude: number }[]; drawnCoords: { latitude: number; longitude: number }[] | null }
+    >();
     legs.forEach((leg, i) => {
       const segIdx = leg.segmentIndex ?? i;
-      const list = segments.get(segIdx) ?? [];
-      list.push(...leg.coordinates);
-      segments.set(segIdx, list);
+      const entry = segments.get(segIdx) ?? { coords: [], drawnCoords: null };
+      entry.coords.push(...leg.coordinates);
+      if (leg.drawn) entry.drawnCoords = leg.coordinates;
+      segments.set(segIdx, entry);
     });
-    segments.forEach((coords, segIdx) => {
-      const mid = midpointOfLine(coords);
+    segments.forEach((entry, segIdx) => {
+      const isDrawn = !!entry.drawnCoords;
+      const anchor = entry.drawnCoords ?? entry.coords;
+      const mid = midpointOfLine(anchor);
       if (!mid) return;
-      const isDrawn = drawnSegmentIndices.has(segIdx);
       out.push({
         id: `leg-badge-${segIdx}`,
         coordinate: mid,
-        badgeText: isDrawn ? `✏️ ${segIdx + 1}` : String(segIdx + 1),
+        badgeText: String(segIdx + 1),
         badgeColor: isDrawn ? '#ec4899' : style.color,
       });
     });
@@ -502,7 +542,7 @@ export default function Home() {
       });
     }
     return out;
-  }, [stops, legs, userLocation, style, heading, drawing, drawTargetStopId, navigating, mallsVisible, drawnSegmentIndices]);
+  }, [stops, legs, userLocation, style, heading, drawing, drawTargetStopId, navigating, mallsVisible]);
 
   // ---------------------------------------------------------------------
   // Handlers
@@ -665,7 +705,47 @@ export default function Home() {
       // drawn a bus override, a driving override, etc. Do NOT force walking.
       setDrawTargetStopId(null);
       setDrawing(false);
-      setPlannerCollapsed(true);
+      // Show the planner expanded so the user can immediately see the route
+      // summary (total time / distance) down to the bottom of the sheet.
+      setPlannerCollapsed(false);
+
+      // Offer two ways to finish the connector from the drawing end to the
+      // destination: a possibly-U-turning shortest route vs a straight-ahead
+      // longer one. Only prompt when they meaningfully differ.
+      const drawEnd = matched.coordinates[matched.coordinates.length - 1];
+      const destPt = { latitude: toStop.latitude, longitude: toStop.longitude };
+      try {
+        const variants = await computePostConnectorVariants(drawEnd, destPt, mode);
+        if (variants) {
+          setPostChooser({
+            fromStopId: fromStop.id,
+            toStopId: toStop.id,
+            variants,
+            choice: 'uturn',
+          });
+          // Zoom to the area covering both completion variants.
+          const pts = [
+            ...variants.uturn.coordinates,
+            ...variants.forward.coordinates,
+          ];
+          if (pts.length >= 2) {
+            const lats = pts.map((p) => p.latitude);
+            const lons = pts.map((p) => p.longitude);
+            const minLat = Math.min(...lats);
+            const maxLat = Math.max(...lats);
+            const minLon = Math.min(...lons);
+            const maxLon = Math.max(...lons);
+            setRegion({
+              latitude: (minLat + maxLat) / 2,
+              longitude: (minLon + maxLon) / 2,
+              latitudeDelta: Math.max(0.006, (maxLat - minLat) * 1.8),
+              longitudeDelta: Math.max(0.006, (maxLon - minLon) * 1.8),
+            });
+          }
+        }
+      } catch {
+        // ignore — connector chooser is optional
+      }
       return;
     }
 
@@ -705,7 +785,8 @@ export default function Home() {
     );
     setDrawing(false);
     setInitialStrokes(undefined);
-    setPlannerCollapsed(true);
+    // Expanded so the route summary (total time + distance) is visible.
+    setPlannerCollapsed(false);
   };
 
   const finalizeMatched = async (matched: MatchedRoute) => {
@@ -823,15 +904,73 @@ export default function Home() {
     setDrawing(true);
   }, []);
 
+  /** Commit the chosen post-connector for a partial drawing, then close. */
+  const handleChoosePostConnector = (choice: 'uturn' | 'forward') => {
+    if (!postChooser) return;
+    const variant = postChooser.variants[choice];
+    const existing = useTripStore
+      .getState()
+      .drawnRoutes.find(
+        (r) =>
+          r.fromStopId === postChooser.fromStopId &&
+          r.toStopId === postChooser.toStopId,
+      );
+    if (existing) {
+      addDrawnRoute({
+        ...existing,
+        postConnector: {
+          coordinates: variant.coordinates,
+          distanceMeters: variant.distanceMeters,
+        },
+      });
+    }
+    setPostChooser(null);
+  };
+
   const handleCancelDrawing = () => {
     setDrawing(false);
     setDrawTargetStopId(null);
     setInitialStrokes(undefined);
   };
 
-  const handleSelectTransitOption = useCallback((opt: TransitOption | null) => {
-    setSelectedTransitOption(opt);
-  }, []);
+  /** User erased all strokes while editing an existing drawn route → drop the
+   *  whole drawn trip (overrides, adapted strokes, stops) and return to map. */
+  const handleClearDrawnAll = () => {
+    setDrawnRoutes([]);
+    setDrawnStrokesAdapted([]);
+    setDrawnFromMainScreen(false);
+    clearStops();
+    setSelectedTransitOption(null);
+    setDrawTargetStopId(null);
+    setInitialStrokes(undefined);
+    setDrawing(false);
+  };
+
+  const handleSelectTransitOption = useCallback(
+    (opt: TransitOption | null) => {
+      setSelectedTransitOption(opt);
+      if (!opt) return;
+      const cur = useTripStore.getState().stops;
+      if (cur.length < 2) return;
+      const origin = { latitude: cur[0].latitude, longitude: cur[0].longitude };
+      const dest = {
+        latitude: cur[cur.length - 1].latitude,
+        longitude: cur[cur.length - 1].longitude,
+      };
+      const reqId = ++routeReqRef.current;
+      // Rebuild displayed legs around the option's real bus-stop coordinates so
+      // walking connects to/from the actual stops (clean walk→bus→walk).
+      buildTransitLegsFromStops(origin, dest, opt)
+        .then((built) => {
+          if (reqId !== routeReqRef.current) return;
+          if (built && built.length > 0) setLegs(built);
+        })
+        .catch(() => {
+          // keep existing legs on failure
+        });
+    },
+    [setLegs],
+  );
 
   /**
    * Zoom the map to a specific segment of the currently-selected transit
@@ -936,10 +1075,10 @@ export default function Home() {
   // ---------------------------------------------------------------------
   // Hide top "Куда едем?" bar once user has picked at least one destination
   // (i.e. a trip is being planned).
-  const showTopSearchBar = !drawing && !navigating && stops.length === 0;
+  const showTopSearchBar = !drawing && !navigating && !ambiguity && !postChooser && stops.length === 0;
   // Brush is only available when no trip is being planned yet OR planner is expanded.
   const showBrush =
-    !drawing && !navigating && (stops.length === 0 || !plannerCollapsed);
+    !drawing && !navigating && !ambiguity && !postChooser && (stops.length === 0 || !plannerCollapsed);
 
   return (
     <View style={{ flex: 1 }} className="bg-background">
@@ -996,6 +1135,37 @@ export default function Home() {
         </SafeAreaView>
       ) : null}
 
+      {/* Persistent top button — re-enter draw editor whenever a drawn route
+          exists on the main screen (does not disappear when planner collapses). */}
+      {drawnRoutes.length > 0 && !drawing && !navigating && !ambiguity ? (
+        <SafeAreaView
+          edges={['top']}
+          pointerEvents="box-none"
+          style={{ position: 'absolute', left: 0, right: 0, top: 0 }}
+        >
+          <View className="px-4 pt-2" pointerEvents="box-none">
+            <Pressable
+              onPress={handleEditDrawnRoute}
+              className="flex-row items-center gap-2 self-start rounded-full bg-card px-4 py-2.5"
+              style={{
+                shadowColor: '#000',
+                shadowOffset: { width: 0, height: 2 },
+                shadowOpacity: 0.16,
+                shadowRadius: 8,
+                elevation: 6,
+              }}
+            >
+              <View className="h-6 w-6 items-center justify-center rounded-full bg-pink-500">
+                <Brush size={13} color="#fff" />
+              </View>
+              <Text className="text-sm font-semibold text-foreground">
+                Изменить нарисованный маршрут
+              </Text>
+            </Pressable>
+          </View>
+        </SafeAreaView>
+      ) : null}
+
       {/* Navigation bar (while in trip mode) */}
       {navigating ? (
         <NavigationBar
@@ -1006,7 +1176,7 @@ export default function Home() {
       ) : null}
 
       {/* Floating controls (right side) */}
-      {!drawing ? (
+      {!drawing && !ambiguity && !postChooser ? (
         <SafeAreaView
           edges={['top']}
           pointerEvents="box-none"
@@ -1091,7 +1261,7 @@ export default function Home() {
       ) : null}
 
       {/* Planner bottom sheet (non-transit modes) */}
-      {plannerVisible && !navigating && !drawing && mode !== 'transit' ? (
+      {plannerVisible && !navigating && !drawing && !ambiguity && !postChooser && mode !== 'transit' ? (
         <RoutePlanner
           collapsed={plannerCollapsed}
           onToggleCollapsed={() => setPlannerCollapsed((v) => !v)}
@@ -1106,7 +1276,7 @@ export default function Home() {
       ) : null}
 
       {/* Transit full-screen planner */}
-      {plannerVisible && !navigating && !drawing && mode === 'transit' ? (
+      {plannerVisible && !navigating && !drawing && !ambiguity && !postChooser && mode === 'transit' ? (
         <TransitPlanner
           onClose={handleClosePlanner}
           onAddStop={openStopSearch}
@@ -1130,6 +1300,7 @@ export default function Home() {
           processing={drawProcessing}
           partial={drawTargetStopId !== null}
           initialStrokes={initialStrokes}
+          onClearAll={handleClearDrawnAll}
         />
       ) : null}
 
@@ -1142,6 +1313,96 @@ export default function Home() {
           onNext={handleAmbiguityNext}
           onChoose={handleAmbiguityChoose}
         />
+      ) : null}
+
+      {/* Post-connector chooser — two ways to finish a partial drawing. */}
+      {postChooser ? (
+        <>
+          {/* Top hint */}
+          <SafeAreaView
+            edges={['top']}
+            pointerEvents="box-none"
+            style={{ position: 'absolute', left: 0, right: 0, top: 0 }}
+          >
+            <View className="px-4 pt-2">
+              <View
+                className="rounded-2xl bg-card px-4 py-3"
+                style={{
+                  shadowColor: '#000',
+                  shadowOffset: { width: 0, height: 2 },
+                  shadowOpacity: 0.14,
+                  shadowRadius: 8,
+                  elevation: 6,
+                }}
+              >
+                <Text className="text-sm font-semibold text-foreground">
+                  Как доехать до точки?
+                </Text>
+                <Text className="mt-0.5 text-[11px] text-muted-foreground">
+                  Выберите, как достроить путь от конца линии до точки. Это
+                  помогает строить маршрут точнее.
+                </Text>
+              </View>
+            </View>
+          </SafeAreaView>
+
+          {/* Bottom variant cards */}
+          <SafeAreaView
+            edges={['bottom']}
+            pointerEvents="box-none"
+            style={{ position: 'absolute', left: 0, right: 0, bottom: 0 }}
+          >
+            <View className="gap-2 px-4 pb-4">
+              {(['uturn', 'forward'] as const).map((key) => {
+                const v = postChooser.variants[key];
+                const isPrimary = key === 'uturn';
+                const selected = postChooser.choice === key;
+                return (
+                  <Pressable
+                    key={key}
+                    onPress={() => {
+                      setPostChooser((p) => (p ? { ...p, choice: key } : p));
+                      handleChoosePostConnector(key);
+                    }}
+                    className={`flex-row items-center justify-between rounded-2xl border-2 bg-card px-4 py-3 ${
+                      selected ? 'border-primary' : 'border-border'
+                    }`}
+                    style={{
+                      shadowColor: '#000',
+                      shadowOffset: { width: 0, height: 2 },
+                      shadowOpacity: 0.12,
+                      shadowRadius: 8,
+                      elevation: 5,
+                    }}
+                  >
+                    <View className="flex-1 flex-row items-center gap-3">
+                      <View
+                        className="h-3 w-3 rounded-full"
+                        style={{
+                          backgroundColor: isPrimary ? '#2563eb' : '#9ca3af',
+                        }}
+                      />
+                      <View className="flex-1">
+                        <Text className="text-sm font-semibold text-foreground">
+                          {isPrimary
+                            ? 'Короткий (с разворотом)'
+                            : 'Длиннее (без разворота)'}
+                        </Text>
+                        <Text className="text-[11px] text-muted-foreground">
+                          {formatDuration(v.durationSeconds)} ·{' '}
+                          {formatDistance(v.distanceMeters)}
+                        </Text>
+                      </View>
+                    </View>
+                    <Text className="text-xs font-semibold text-primary">
+                      Выбрать
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </SafeAreaView>
+        </>
       ) : null}
 
       {/* Global search sheet */}

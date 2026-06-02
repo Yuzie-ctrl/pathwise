@@ -16,6 +16,7 @@ interface DrawCanvasProps {
   processing?: boolean;
   partial?: boolean;
   initialStrokes?: LatLng[][];
+  onClearAll?: () => void;
 }
 
 const STROKE_COLORS = [
@@ -40,6 +41,7 @@ export function DrawCanvas({
   processing,
   partial,
   initialStrokes,
+  onClearAll,
 }: DrawCanvasProps) {
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -274,7 +276,12 @@ export function DrawCanvas({
     const allStrokes = [...strokes];
     if (extra.length >= 2 && mode === 'draw') allStrokes.push(extra);
     const usable = allStrokes.filter((s) => s.length >= 2);
-    if (usable.length === 0) return;
+    if (usable.length === 0) {
+      if (seededRef.current && onClearAll) {
+        onClearAll();
+      }
+      return;
+    }
     if (onConfirmStrokes) {
       onConfirmStrokes(usable);
       return;
@@ -410,28 +417,28 @@ export function DrawCanvas({
         </svg>
       ) : null}
 
-      {/* Tappable number badges (reorder) */}
-      {mode === 'draw' &&
-        strokePaths.map((sp, idx) => (
-          <Pressable
-            key={`b${idx}`}
-            onPress={() => setReorderIdx(idx)}
-            style={{
-              position: 'absolute',
-              left: sp.label.x - 16,
-              top: sp.label.y - 16,
-              width: 32,
-              height: 32,
-              alignItems: 'center',
-              justifyContent: 'center',
-              zIndex: 8,
-            }}
-          >
-            <Text className="text-xs font-bold" style={{ color: '#fff' }}>
-              {idx + 1}
-            </Text>
-          </Pressable>
-        ))}
+      {/* Number badges — tappable (reorder) in draw mode, visible-only in erase. */}
+      {strokePaths.map((sp, idx) => (
+        <Pressable
+          key={`b${idx}`}
+          onPress={mode === 'draw' ? () => setReorderIdx(idx) : undefined}
+          pointerEvents={mode === 'draw' ? 'auto' : 'none'}
+          style={{
+            position: 'absolute',
+            left: sp.label.x - 16,
+            top: sp.label.y - 16,
+            width: 32,
+            height: 32,
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 8,
+          }}
+        >
+          <Text className="text-xs font-bold" style={{ color: '#fff' }}>
+            {idx + 1}
+          </Text>
+        </Pressable>
+      ))}
 
       <View
         pointerEvents="box-none"
@@ -503,16 +510,16 @@ export function DrawCanvas({
         </Pressable>
         <Pressable
           onPress={handleConfirm}
-          disabled={!hasDrawn || processing}
+          disabled={(!hasDrawn && !(seededRef.current && !!onClearAll)) || processing}
           className={`flex-1 flex-row items-center justify-center gap-2 rounded-2xl py-3 ${
-            hasDrawn && !processing ? 'bg-primary' : 'bg-muted'
+            (hasDrawn || (seededRef.current && !!onClearAll)) && !processing ? 'bg-primary' : 'bg-muted'
           }`}
           style={btnShadow}
         >
-          <Check size={18} color={hasDrawn && !processing ? '#fff' : '#999'} />
+          <Check size={18} color={(hasDrawn || (seededRef.current && !!onClearAll)) && !processing ? '#fff' : '#999'} />
           <Text
             className={`text-base font-semibold ${
-              hasDrawn && !processing
+              (hasDrawn || (seededRef.current && !!onClearAll)) && !processing
                 ? 'text-primary-foreground'
                 : 'text-muted-foreground'
             }`}

@@ -31,6 +31,9 @@ export interface RouteLeg {
   mode?: TransportMode;
   /** Index of the logical stop-to-stop segment this leg belongs to. */
   segmentIndex?: number;
+  /** True when this specific leg is the user's hand-drawn stretch (so only
+   *  this part is highlighted, not the road-routed connectors around it). */
+  drawn?: boolean;
 }
 
 export interface SearchHistoryItem {
@@ -64,6 +67,11 @@ interface TripState {
      *  router should still build from-stop → drawing-start and
      *  drawing-end → to-stop. */
     partial?: boolean;
+    /** Chosen completion from the drawing end to the destination. */
+    postConnector?: {
+      coordinates: { latitude: number; longitude: number }[];
+      distanceMeters: number;
+    };
   }[];
   /**
    * Road-snapped individual drawn strokes (in draw order) from the LAST

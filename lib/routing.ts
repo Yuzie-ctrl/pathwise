@@ -178,6 +178,13 @@ export interface DrawnRouteOverride {
   distanceMeters: number;
   durationSeconds: number;
   partial?: boolean;
+  /** Chosen completion from the drawing end to the destination (overrides the
+   *  default OSRM connector). Set when the user picks a U-turn vs forward
+   *  alternative after a partial drawing. */
+  postConnector?: {
+    coordinates: { latitude: number; longitude: number }[];
+    distanceMeters: number;
+  };
 }
 
 export async function fetchRoute(
@@ -218,6 +225,7 @@ export async function fetchRoute(
           coordinates: coords,
           segmentIndex: i,
           mode,
+          drawn: true,
         });
         continue;
       }
@@ -227,7 +235,24 @@ export async function fetchRoute(
       const drawStart = override.coordinates[0];
       const drawEnd = override.coordinates[override.coordinates.length - 1];
       const preCoords = await tryOsrmRoute(profile, a, drawStart, signal);
-      const postCoords = await tryOsrmRoute(profile, drawEnd, b, signal);
+      // Use an explicitly-chosen post connector (U-turn vs forward) when set,
+      // otherwise route drawEnd → b along roads.
+      let postCoords: {
+        coordinates: { latitude: number; longitude: number }[];
+        distance?: number;
+        duration?: number;
+      };
+      if (
+        override.postConnector &&
+        override.postConnector.coordinates.length >= 2
+      ) {
+        postCoords = {
+          coordinates: override.postConnector.coordinates,
+          distance: override.postConnector.distanceMeters,
+        };
+      } else {
+        postCoords = await tryOsrmRoute(profile, drawEnd, b, signal);
+      }
       const preDist = preCoords.distance ?? routeDistanceMeters(preCoords);
       const postDist = postCoords.distance ?? routeDistanceMeters(postCoords);
       if (preCoords.coordinates.length >= 2) {
@@ -245,6 +270,7 @@ export async function fetchRoute(
         coordinates: override.coordinates,
         segmentIndex: i,
         mode,
+        drawn: true,
       });
       if (postCoords.coordinates.length >= 2) {
         legs.push({
@@ -1168,6 +1194,10 @@ export interface TransitSegment {
   headsign?: string;
   /** Intermediate stop names along the ride (for future timeline expansion). */
   intermediateStops?: string[];
+  /** Geo coordinate of the boarding (bus) stop, when known (GTFS). */
+  fromCoord?: { latitude: number; longitude: number };
+  /** Geo coordinate of the alighting (bus) stop, when known (GTFS). */
+  toCoord?: { latitude: number; longitude: number };
 }
 
 export interface TransitOption {
@@ -1364,8 +1394,8 @@ export function buildTransitOptionsFromGtfs(
   rides: {
     route: { id: string; short_name: string; long_name: string; vehicle_kind: string; color: string | null };
     trip: { id: string; direction: number; headsign: string };
-    fromStop: { id: string; name: string };
-    toStop: { id: string; name: string };
+    fromStop: { id: string; name: string; latitude?: number; longitude?: number };
+    toStop: { id: string; name: string; latitude?: number; longitude?: number };
     departureMinute: number;
     arrivalMinute: number;
     rideMinutes: number;
@@ -1428,6 +1458,14 @@ export function buildTransitOptionsFromGtfs(
       stopsCount: ride.stopsCount,
       headsign: ride.trip.headsign,
       intermediateStops: ride.intermediateStops,
+      fromCoord:
+        ride.fromStop.latitude != null && ride.fromStop.longitude != null
+          ? { latitude: ride.fromStop.latitude, longitude: ride.fromStop.longitude }
+          : undefined,
+      toCoord:
+        ride.toStop.latitude != null && ride.toStop.longitude != null
+          ? { latitude: ride.toStop.latitude, longitude: ride.toStop.longitude }
+          : undefined,
     });
     // Insert dwells from via-stops (they represent user-configured pauses at
     // the destination side of the ride — displayed as non-counted pause rows).
@@ -1480,6 +1518,78 @@ export function buildTransitOptionsFromGtfs(
 }
 
 /**
+ * Compute two candidate completions of a PARTIAL drawing's connector from the
+ * drawing end to the destination stop:
+ *
+ *  - `uturn`  : the shortest road route (OSRM default) — may turn around and
+ *               head back along/near the drawn line if that's genuinely fastest.
+ *  - `forward`: a route forced to continue straight off the drawing end
+ *               (`continue_straight=true`), avoiding an immediate U-turn even if
+ *               slightly longer.
+ *
+ * Returns null when the two are effectively identical (no real choice).
+ */
+export interface PostConnectorVariants {
+  uturn: { coordinates: MatchedPoint[]; distanceMeters: number; durationSeconds: number };
+  forward: { coordinates: MatchedPoint[]; distanceMeters: number; durationSeconds: number };
+}
+
+export async function computePostConnectorVariants(
+  drawEnd: { latitude: number; longitude: number },
+  destination: { latitude: number; longitude: number },
+  mode: TransportMode,
+  signal?: AbortSignal,
+): Promise<PostConnectorVariants | null> {
+  const profile = OSRM_PROFILES[mode];
+  const speed = AVG_SPEED_MPS[mode] ?? AVG_SPEED_MPS.driving;
+
+  const fetchVariant = async (continueStraight: boolean) => {
+    try {
+      const url =
+        `https://router.project-osrm.org/route/v1/${profile}/` +
+        `${drawEnd.longitude},${drawEnd.latitude};${destination.longitude},${destination.latitude}` +
+        `?overview=full&geometries=geojson&continue_straight=${continueStraight ? 'true' : 'false'}`;
+      const res = await fetch(url, { signal });
+      if (!res.ok) return null;
+      const data = (await res.json()) as {
+        code: string;
+        routes?: { distance: number; geometry: { coordinates: [number, number][] } }[];
+      };
+      if (data.code !== 'Ok' || !data.routes?.length) return null;
+      const r = data.routes[0];
+      const coords = r.geometry.coordinates.map(([lon, lat]) => ({
+        latitude: lat,
+        longitude: lon,
+      }));
+      if (coords.length < 2) return null;
+      coords[0] = drawEnd;
+      coords[coords.length - 1] = destination;
+      return {
+        coordinates: coords,
+        distanceMeters: r.distance,
+        durationSeconds: Math.round(r.distance / speed),
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  const [uturn, forward] = await Promise.all([
+    fetchVariant(false),
+    fetchVariant(true),
+  ]);
+  if (!uturn || !forward) return null;
+  // No real choice if they're nearly the same length / shape.
+  if (
+    Math.abs(uturn.distanceMeters - forward.distanceMeters) < 60 ||
+    polylinesSimilar(uturn.coordinates, forward.coordinates, 30)
+  ) {
+    return null;
+  }
+  return { uturn, forward };
+}
+
+/**
  * All unique transit line numbers that could appear in the given options.
  * Used for the "filter by line" chip picker.
  */
@@ -1487,4 +1597,77 @@ export function allTransitLines(options: TransitOption[]): string[] {
   const set = new Set<string>();
   for (const o of options) for (const l of o.busLines) set.add(l);
   return Array.from(set).sort();
+}
+
+/**
+ * Build the displayed route legs for a SELECTED transit option using the
+ * option's real bus-stop coordinates (GTFS) so walk/bus boundaries land on the
+ * actual stops instead of an arbitrary % split.
+ *
+ * Geometry:
+ *   origin → (walk, road)    → boarding stop
+ *   boarding → (bus, road)   → alighting stop
+ *   alighting → (walk, road) → destination
+ *
+ * Falls back to null when the option has no stop coords (synthetic options),
+ * letting the caller keep the default `fetchRoute` transit legs.
+ */
+export async function buildTransitLegsFromStops(
+  origin: { latitude: number; longitude: number },
+  destination: { latitude: number; longitude: number },
+  option: TransitOption,
+  signal?: AbortSignal,
+): Promise<RouteLeg[] | null> {
+  // Find the first bus-like segment that carries stop coordinates.
+  const ride = option.segments.find(
+    (s) => s.kind !== 'walk' && s.fromCoord && s.toCoord,
+  );
+  if (!ride || !ride.fromCoord || !ride.toCoord) return null;
+
+  const board = ride.fromCoord;
+  const alight = ride.toCoord;
+
+  const walkProfile = OSRM_PROFILES.walking;
+  const busProfile = OSRM_PROFILES.transit;
+
+  const [walk1, busGeom, walk2] = await Promise.all([
+    tryOsrmRoute(walkProfile, origin, board, signal),
+    tryOsrmRoute(busProfile, board, alight, signal),
+    tryOsrmRoute(walkProfile, alight, destination, signal),
+  ]);
+
+  const legs: RouteLeg[] = [];
+
+  const w1Dist = walk1.distance ?? routeDistanceMetersFlat(walk1.coordinates);
+  if (walk1.coordinates.length >= 2) {
+    legs.push({
+      coordinates: walk1.coordinates,
+      distanceMeters: w1Dist,
+      durationSeconds: Math.round(w1Dist / AVG_SPEED_MPS.walking),
+      segmentIndex: 0,
+      mode: 'walking',
+    });
+  }
+
+  const busDist = busGeom.distance ?? routeDistanceMetersFlat(busGeom.coordinates);
+  legs.push({
+    coordinates: busGeom.coordinates.length >= 2 ? busGeom.coordinates : [board, alight],
+    distanceMeters: busDist,
+    durationSeconds: Math.round(busDist / AVG_SPEED_MPS.transit),
+    segmentIndex: 0,
+    mode: 'transit',
+  });
+
+  const w2Dist = walk2.distance ?? routeDistanceMetersFlat(walk2.coordinates);
+  if (walk2.coordinates.length >= 2) {
+    legs.push({
+      coordinates: walk2.coordinates,
+      distanceMeters: w2Dist,
+      durationSeconds: Math.round(w2Dist / AVG_SPEED_MPS.walking),
+      segmentIndex: 0,
+      mode: 'walking',
+    });
+  }
+
+  return legs;
 }
