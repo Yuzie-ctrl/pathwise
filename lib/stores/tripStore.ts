@@ -65,6 +65,19 @@ interface TripState {
      *  drawing-end → to-stop. */
     partial?: boolean;
   }[];
+  /**
+   * Road-snapped individual drawn strokes (in draw order) from the LAST
+   * main-screen drawing session. Used by the transit planner peek view to
+   * show only the user's drawn parts (adapted to roads) before a specific
+   * bus is chosen. Cleared when the trip resets.
+   */
+  drawnStrokesAdapted: { latitude: number; longitude: number }[][];
+  /**
+   * True when the current trip originated from a free-form drawing started on
+   * the MAIN screen (not from the point-picker). Controls whether the transit
+   * planner shows the swipe-down peek strip.
+   */
+  drawnFromMainScreen: boolean;
   ensureOrigin: (coords?: { latitude: number; longitude: number }) => void;
   setOriginToMyLocation: (coords: { latitude: number; longitude: number }) => void;
   setOriginToPlace: (place: {
@@ -90,6 +103,10 @@ interface TripState {
   setDrawnRoutes: (routes: TripState['drawnRoutes']) => void;
   addDrawnRoute: (route: TripState['drawnRoutes'][number]) => void;
   removeDrawnRouteForLeg: (fromStopId: string, toStopId: string) => void;
+  setDrawnStrokesAdapted: (
+    strokes: { latitude: number; longitude: number }[][],
+  ) => void;
+  setDrawnFromMainScreen: (v: boolean) => void;
 }
 
 function uid() {
@@ -106,6 +123,8 @@ export const useTripStore = create<TripState>()(
       navigating: false,
       searchHistory: [],
       drawnRoutes: [],
+      drawnStrokesAdapted: [],
+      drawnFromMainScreen: false,
 
       ensureOrigin: (coords) => {
         const { stops } = get();
@@ -226,12 +245,24 @@ export const useTripStore = create<TripState>()(
           return { stops: next };
         }),
 
-      clearStops: () => set({ stops: [], legs: [], navigating: false, drawnRoutes: [] }),
+      clearStops: () =>
+        set({
+          stops: [],
+          legs: [],
+          navigating: false,
+          drawnRoutes: [],
+          drawnStrokesAdapted: [],
+          drawnFromMainScreen: false,
+        }),
       setMode: (mode) => set({ mode }),
       setLegs: (legs) => set({ legs }),
       setLoadingRoute: (loading) => set({ loadingRoute: loading }),
       setNavigating: (navigating) => set({ navigating }),
       setDrawnRoutes: (drawnRoutes) => set({ drawnRoutes }),
+      setDrawnStrokesAdapted: (drawnStrokesAdapted) =>
+        set({ drawnStrokesAdapted }),
+      setDrawnFromMainScreen: (drawnFromMainScreen) =>
+        set({ drawnFromMainScreen }),
       addDrawnRoute: (route) =>
         set((state) => ({
           drawnRoutes: [

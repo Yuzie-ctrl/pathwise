@@ -1,29 +1,41 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Modal,
   PanResponder,
   Pressable,
   View,
   type LayoutChangeEvent,
 } from 'react-native';
-import Svg, { Path } from 'react-native-svg';
-import { Check, Sparkles, X } from 'lucide-react-native';
+import Svg, { Circle, Path } from 'react-native-svg';
+import { Check, Eraser, Pencil, Sparkles, X } from 'lucide-react-native';
 
 import { Text } from '@/components/ui/text';
 import type { MapRegion } from '@/components/MapView.types';
 
+type LatLng = { latitude: number; longitude: number };
+
 interface DrawCanvasProps {
   region: MapRegion;
   onCancel: () => void;
-  onConfirm: (coords: { latitude: number; longitude: number }[]) => void;
+  onConfirm: (coords: LatLng[]) => void;
   /** Receives each drawn stroke separately so gaps can be road-routed. */
-  onConfirmStrokes?: (
-    strokes: { latitude: number; longitude: number }[][],
-  ) => void;
+  onConfirmStrokes?: (strokes: LatLng[][]) => void;
   onRegionChange?: (region: MapRegion) => void;
   processing?: boolean;
   /** When true, the drawing will be used as a partial route to the current destination. */
   partial?: boolean;
+  /** Preload existing drawn strokes for editing. */
+  initialStrokes?: LatLng[][];
 }
+
+const STROKE_COLORS = [
+  '#2563eb',
+  '#dc2626',
+  '#16a34a',
+  '#d97706',
+  '#7c3aed',
+  '#0891b2',
+];
 
 /**
  * Native draw overlay.
@@ -34,6 +46,12 @@ interface DrawCanvasProps {
  *   the underlying Leaflet WebView receives pinch-zoom / two-finger pan.
  *
  * Strokes are stored in lat/lng so they stay anchored when the map is moved.
+ *
+ * Eraser mode: instead of clearing everything, the user lassos an area; any
+ * stroke whose points fall inside the lasso polygon is removed.
+ *
+ * Each committed stroke is numbered; tapping the number lets the user change
+ * that stroke's order in the route.
  */
 export function DrawCanvas({
   region,
@@ -42,18 +60,31 @@ export function DrawCanvas({
   onConfirmStrokes,
   processing,
   partial,
+  initialStrokes,
 }: DrawCanvasProps) {
   const [size, setSize] = useState<{ width: number; height: number }>({
     width: 0,
     height: 0,
   });
-  const [strokes, setStrokes] = useState<
-    { latitude: number; longitude: number }[][]
-  >([]);
+  const [strokes, setStrokes] = useState<LatLng[][]>(initialStrokes ?? []);
+  const seededRef = useRef(false);
+  useEffect(() => {
+    if (!seededRef.current && initialStrokes && initialStrokes.length) {
+      setStrokes(initialStrokes);
+      seededRef.current = true;
+    }
+  }, [initialStrokes]);
+
+  const [mode, setMode] = useState<'draw' | 'erase'>('draw');
   const currentStrokeRef = useRef<{ x: number; y: number }[]>([]);
   const [currentStrokePx, setCurrentStrokePx] = useState<
     { x: number; y: number }[]
   >([]);
+  // Lasso (erase) capture in px.
+  const lassoRef = useRef<{ x: number; y: number }[]>([]);
+  const [lassoPx, setLassoPx] = useState<{ x: number; y: number }[]>([]);
+  // Reorder modal state.
+  const [reorderIdx, setReorderIdx] = useState<number | null>(null);
 
   const onLayout = (e: LayoutChangeEvent) => {
     setSize({
@@ -63,11 +94,9 @@ export function DrawCanvas({
   };
 
   const pxToLatLng = useCallback(
-    (x: number, y: number) => {
+    (x: number, y: number): LatLng => {
       const { width, height } = size;
       if (!width || !height) return { latitude: 0, longitude: 0 };
-      // Web Mercator — matches Leaflet's default CRS so drawn strokes stay
-      // anchored to real lat/lng when the map pans or zooms.
       const { latitude, longitude, latitudeDelta } = region;
       const tileSize = 256;
       const zoom = Math.log2(360 / latitudeDelta);
@@ -111,6 +140,25 @@ export function DrawCanvas({
   const hasDrawn = strokes.length > 0 || currentStrokePx.length > 0;
 
   const commitStroke = useCallback(() => {
+    if (mode === 'erase') {
+      // Finalize lasso erase.
+      const poly = lassoRef.current.slice();
+      lassoRef.current = [];
+      setLassoPx([]);
+      if (poly.length < 3) return;
+      setStrokes((prev) =>
+        prev.filter((stroke) => {
+          // Remove a stroke if a meaningful fraction of its points lie inside.
+          let inside = 0;
+          for (const pt of stroke) {
+            const px = latLngToPx(pt.latitude, pt.longitude);
+            if (pointInPolygon(px, poly)) inside++;
+          }
+          return inside / stroke.length < 0.4;
+        }),
+      );
+      return;
+    }
     if (currentStrokeRef.current.length < 2) {
       currentStrokeRef.current = [];
       setCurrentStrokePx([]);
@@ -120,15 +168,15 @@ export function DrawCanvas({
     setStrokes((prev) => [...prev, latlng]);
     currentStrokeRef.current = [];
     setCurrentStrokePx([]);
-  }, [pxToLatLng]);
+  }, [mode, pxToLatLng, latLngToPx]);
 
   const cancelStroke = () => {
     currentStrokeRef.current = [];
     setCurrentStrokePx([]);
+    lassoRef.current = [];
+    setLassoPx([]);
   };
 
-  // PanResponder: only grab single-finger gestures. Release when a 2nd
-  // finger lands so the map underneath handles pinch/pan.
   const panResponder = useMemo(
     () =>
       PanResponder.create({
@@ -139,8 +187,13 @@ export function DrawCanvas({
         onPanResponderTerminationRequest: () => true,
         onPanResponderGrant: (e) => {
           const { locationX, locationY } = e.nativeEvent;
-          currentStrokeRef.current = [{ x: locationX, y: locationY }];
-          setCurrentStrokePx([{ x: locationX, y: locationY }]);
+          if (mode === 'erase') {
+            lassoRef.current = [{ x: locationX, y: locationY }];
+            setLassoPx([{ x: locationX, y: locationY }]);
+          } else {
+            currentStrokeRef.current = [{ x: locationX, y: locationY }];
+            setCurrentStrokePx([{ x: locationX, y: locationY }]);
+          }
         },
         onPanResponderMove: (e) => {
           if (e.nativeEvent.touches.length > 1) {
@@ -148,17 +201,18 @@ export function DrawCanvas({
             return;
           }
           const { locationX, locationY } = e.nativeEvent;
-          const last =
-            currentStrokeRef.current[currentStrokeRef.current.length - 1];
+          const buf = mode === 'erase' ? lassoRef.current : currentStrokeRef.current;
+          const last = buf[buf.length - 1];
           if (last && Math.hypot(locationX - last.x, locationY - last.y) < 3)
             return;
-          currentStrokeRef.current.push({ x: locationX, y: locationY });
-          setCurrentStrokePx([...currentStrokeRef.current]);
+          buf.push({ x: locationX, y: locationY });
+          if (mode === 'erase') setLassoPx([...buf]);
+          else setCurrentStrokePx([...buf]);
         },
         onPanResponderRelease: commitStroke,
         onPanResponderTerminate: commitStroke,
       }),
-    [commitStroke],
+    [commitStroke, mode],
   );
 
   const handleConfirm = () => {
@@ -167,8 +221,6 @@ export function DrawCanvas({
     if (extra.length >= 2) allStrokes.push(extra);
     const usable = allStrokes.filter((s) => s.length >= 2);
     if (usable.length === 0) return;
-    // Prefer the stroke-aware callback so the planner can road-route the
-    // gaps between separate strokes instead of joining them with a line.
     if (onConfirmStrokes) {
       onConfirmStrokes(usable);
       return;
@@ -178,49 +230,52 @@ export function DrawCanvas({
     onConfirm(all);
   };
 
-  const handleClear = () => {
-    currentStrokeRef.current = [];
-    setCurrentStrokePx([]);
-    setStrokes([]);
+  const moveStrokeTo = (from: number, to: number) => {
+    setStrokes((prev) => {
+      if (to < 0 || to >= prev.length) return prev;
+      const next = prev.slice();
+      const [item] = next.splice(from, 1);
+      next.splice(to, 0, item);
+      return next;
+    });
+    setReorderIdx(null);
   };
 
-  const committedSvgPath = useMemo(() => {
-    if (!size.width || !size.height) return '';
-    return strokes
-      .map((stroke) =>
-        stroke
-          .map((pt, idx) => {
-            const { x, y } = latLngToPx(pt.latitude, pt.longitude);
-            return `${idx === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
-          })
-          .join(' '),
-      )
-      .join(' ');
+  // Per-stroke svg path + label anchor.
+  const strokePaths = useMemo(() => {
+    if (!size.width || !size.height) return [];
+    return strokes.map((stroke) => {
+      const pts = stroke.map((pt) => latLngToPx(pt.latitude, pt.longitude));
+      const d = pts
+        .map((p, idx) => `${idx === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`)
+        .join(' ');
+      const mid = pts[Math.floor(pts.length / 2)] ?? { x: 0, y: 0 };
+      return { d, label: mid };
+    });
   }, [strokes, latLngToPx, size.width, size.height]);
 
   const currentSvgPath = useMemo(() => {
     if (currentStrokePx.length === 0) return '';
     return currentStrokePx
-      .map(
-        (pt, idx) =>
-          `${idx === 0 ? 'M' : 'L'}${pt.x.toFixed(1)},${pt.y.toFixed(1)}`,
-      )
+      .map((pt, idx) => `${idx === 0 ? 'M' : 'L'}${pt.x.toFixed(1)},${pt.y.toFixed(1)}`)
       .join(' ');
   }, [currentStrokePx]);
 
+  const lassoSvgPath = useMemo(() => {
+    if (lassoPx.length < 2) return '';
+    return (
+      lassoPx
+        .map((pt, idx) => `${idx === 0 ? 'M' : 'L'}${pt.x.toFixed(1)},${pt.y.toFixed(1)}`)
+        .join(' ') + ' Z'
+    );
+  }, [lassoPx]);
+
   return (
     <View
-      style={{
-        position: 'absolute',
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-      }}
+      style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
       pointerEvents="box-none"
       onLayout={onLayout}
     >
-      {/* Faint tint */}
       <View
         pointerEvents="none"
         style={{
@@ -229,33 +284,35 @@ export function DrawCanvas({
           left: 0,
           right: 0,
           bottom: 0,
-          backgroundColor: 'rgba(37, 99, 235, 0.03)',
+          backgroundColor:
+            mode === 'erase' ? 'rgba(220,38,38,0.04)' : 'rgba(37, 99, 235, 0.03)',
         }}
       />
 
-      {/* Gesture capture */}
       <View
         style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
         {...panResponder.panHandlers}
       />
 
-      {size.width > 0 && (committedSvgPath || currentSvgPath) ? (
+      {size.width > 0 ? (
         <Svg
           width={size.width}
           height={size.height}
           style={{ position: 'absolute', top: 0, left: 0 }}
           pointerEvents="none"
         >
-          {committedSvgPath ? (
+          {strokePaths.map((sp, idx) => (
             <Path
-              d={committedSvgPath}
-              stroke="#2563eb"
+              key={`s${idx}`}
+              d={sp.d}
+              stroke={STROKE_COLORS[idx % STROKE_COLORS.length]}
               strokeWidth={5}
               strokeLinecap="round"
               strokeLinejoin="round"
               fill="none"
+              opacity={mode === 'erase' ? 0.55 : 1}
             />
-          ) : null}
+          ))}
           {currentSvgPath ? (
             <Path
               d={currentSvgPath}
@@ -266,9 +323,51 @@ export function DrawCanvas({
               fill="none"
             />
           ) : null}
+          {lassoSvgPath ? (
+            <Path
+              d={lassoSvgPath}
+              stroke="#dc2626"
+              strokeWidth={2}
+              strokeDasharray="6 5"
+              fill="rgba(220,38,38,0.10)"
+            />
+          ) : null}
+          {/* Stroke number badges */}
+          {strokePaths.map((sp, idx) => (
+            <Circle
+              key={`c${idx}`}
+              cx={sp.label.x}
+              cy={sp.label.y}
+              r={12}
+              fill={STROKE_COLORS[idx % STROKE_COLORS.length]}
+            />
+          ))}
         </Svg>
       ) : null}
 
+      {/* Tappable number badges (to reorder) — separate touchable layer */}
+      {mode === 'draw' &&
+        strokePaths.map((sp, idx) => (
+          <Pressable
+            key={`b${idx}`}
+            onPress={() => setReorderIdx(idx)}
+            style={{
+              position: 'absolute',
+              left: sp.label.x - 16,
+              top: sp.label.y - 16,
+              width: 32,
+              height: 32,
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <Text className="text-xs font-bold" style={{ color: '#fff' }}>
+              {idx + 1}
+            </Text>
+          </Pressable>
+        ))}
+
+      {/* Top instruction banner */}
       <View
         pointerEvents="box-none"
         style={{ position: 'absolute', top: 16, left: 16, right: 16 }}
@@ -283,19 +382,20 @@ export function DrawCanvas({
             elevation: 6,
           }}
         >
-          <Sparkles size={16} color="#2563eb" />
+          <Sparkles size={16} color={mode === 'erase' ? '#dc2626' : '#2563eb'} />
           <Text className="flex-1 text-sm text-foreground">
-            {hasDrawn
-              ? partial
+            {mode === 'erase'
+              ? 'Обведите участок — линии внутри удалятся, остальные останутся'
+              : hasDrawn
                 ? 'ИИ подстроит линии под дороги и соединит части по дорогам'
-                : 'ИИ подстроит линии под дороги и соединит части по дорогам'
-              : partial
-                ? 'Нарисуйте часть или весь маршрут (можно несколькими линиями)'
-                : 'Рисуйте одним пальцем (можно несколько линий), двумя — двигайте карту'}
+                : partial
+                  ? 'Нарисуйте часть или весь маршрут (можно несколькими линиями)'
+                  : 'Рисуйте одним пальцем (можно несколько линий), двумя — двигайте карту'}
           </Text>
         </View>
       </View>
 
+      {/* Bottom controls */}
       <View
         pointerEvents="box-none"
         style={{
@@ -309,48 +409,43 @@ export function DrawCanvas({
       >
         <Pressable
           onPress={onCancel}
-          className="flex-1 flex-row items-center justify-center gap-2 rounded-2xl bg-card py-3"
-          style={{
-            shadowColor: '#000',
-            shadowOffset: { width: 0, height: 2 },
-            shadowOpacity: 0.12,
-            shadowRadius: 8,
-            elevation: 4,
-          }}
+          className="flex-row items-center justify-center gap-2 rounded-2xl bg-card px-4 py-3"
+          style={btnShadow}
         >
           <X size={18} color="#444" />
-          <Text className="text-base font-medium text-foreground">Отмена</Text>
         </Pressable>
-        {hasDrawn ? (
-          <Pressable
-            onPress={handleClear}
-            className="flex-row items-center justify-center gap-2 rounded-2xl bg-card px-4 py-3"
-            style={{
-              shadowColor: '#000',
-              shadowOffset: { width: 0, height: 2 },
-              shadowOpacity: 0.12,
-              shadowRadius: 8,
-              elevation: 4,
-            }}
-          >
-            <Text className="text-base font-medium text-foreground">
-              Стереть
-            </Text>
-          </Pressable>
-        ) : null}
+
+        {/* Draw / Erase toggle */}
+        <Pressable
+          onPress={() => setMode((m) => (m === 'draw' ? 'erase' : 'draw'))}
+          disabled={!hasDrawn && mode === 'draw'}
+          className={`flex-row items-center justify-center gap-2 rounded-2xl px-4 py-3 ${
+            mode === 'erase' ? 'bg-destructive' : 'bg-card'
+          }`}
+          style={btnShadow}
+        >
+          {mode === 'erase' ? (
+            <>
+              <Pencil size={18} color="#fff" />
+              <Text className="text-sm font-medium" style={{ color: '#fff' }}>
+                Рисовать
+              </Text>
+            </>
+          ) : (
+            <>
+              <Eraser size={18} color="#444" />
+              <Text className="text-sm font-medium text-foreground">Стереть</Text>
+            </>
+          )}
+        </Pressable>
+
         <Pressable
           onPress={handleConfirm}
           disabled={!hasDrawn || processing}
           className={`flex-1 flex-row items-center justify-center gap-2 rounded-2xl py-3 ${
             hasDrawn && !processing ? 'bg-primary' : 'bg-muted'
           }`}
-          style={{
-            shadowColor: '#000',
-            shadowOffset: { width: 0, height: 2 },
-            shadowOpacity: 0.18,
-            shadowRadius: 8,
-            elevation: 4,
-          }}
+          style={btnShadow}
         >
           <Check size={18} color={hasDrawn && !processing ? '#fff' : '#999'} />
           <Text
@@ -364,6 +459,82 @@ export function DrawCanvas({
           </Text>
         </Pressable>
       </View>
+
+      {/* Reorder modal */}
+      <Modal
+        visible={reorderIdx !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setReorderIdx(null)}
+      >
+        <Pressable
+          className="flex-1 items-center justify-center"
+          style={{ backgroundColor: 'rgba(0,0,0,0.4)' }}
+          onPress={() => setReorderIdx(null)}
+        >
+          <Pressable
+            className="w-72 rounded-2xl bg-card p-4"
+            onPress={(e) => e.stopPropagation()}
+          >
+            <Text className="mb-1 text-base font-semibold text-foreground">
+              Линия {reorderIdx !== null ? reorderIdx + 1 : ''}
+            </Text>
+            <Text className="mb-3 text-sm text-muted-foreground">
+              Выберите новый номер для этой линии
+            </Text>
+            <View className="flex-row flex-wrap gap-2">
+              {strokes.map((_, i) => (
+                <Pressable
+                  key={i}
+                  onPress={() =>
+                    reorderIdx !== null && moveStrokeTo(reorderIdx, i)
+                  }
+                  className={`h-11 w-11 items-center justify-center rounded-xl ${
+                    reorderIdx === i ? 'bg-primary' : 'bg-muted'
+                  }`}
+                >
+                  <Text
+                    className={`text-base font-semibold ${
+                      reorderIdx === i
+                        ? 'text-primary-foreground'
+                        : 'text-foreground'
+                    }`}
+                  >
+                    {i + 1}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
+}
+
+const btnShadow = {
+  shadowColor: '#000',
+  shadowOffset: { width: 0, height: 2 },
+  shadowOpacity: 0.12,
+  shadowRadius: 8,
+  elevation: 4,
+} as const;
+
+/** Ray-casting point-in-polygon test. */
+function pointInPolygon(
+  pt: { x: number; y: number },
+  poly: { x: number; y: number }[],
+): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i].x;
+    const yi = poly[i].y;
+    const xj = poly[j].x;
+    const yj = poly[j].y;
+    const intersect =
+      yi > pt.y !== yj > pt.y &&
+      pt.x < ((xj - xi) * (pt.y - yi)) / (yj - yi) + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
 }

@@ -69,6 +69,9 @@ interface TransitPlannerProps {
   onZoomToSegment?: (segmentIndex: number) => void;
   /** Re-open search to replace an existing stop (idx>=1). */
   onEditStop?: (stopId: string) => void;
+  /** Notifies the parent that the planner is "peeked" down so the map can
+   *  show only the user's drawn (road-adapted) segments. */
+  onPeekChange?: (peeking: boolean) => void;
 }
 
 function formatHHMM(d: Date) {
@@ -85,6 +88,7 @@ export function TransitPlanner({
   onSelectOption,
   onZoomToSegment,
   onEditStop,
+  onPeekChange,
 }: TransitPlannerProps) {
   const stops = useTripStore((s) => s.stops);
   const mode = useTripStore((s) => s.mode);
@@ -115,6 +119,29 @@ export function TransitPlanner({
 
   const travelSeconds = totalTravelSeconds(legs);
   const distanceMeters = totalDistanceMeters(legs);
+  const drawnFromMainScreen = useTripStore((s) => s.drawnFromMainScreen);
+
+  // Bolt estimate — static formula (base + per-km), to be replaced with the
+  // real Bolt pricing API later. Distance falls back to a sane default when
+  // legs haven't been computed yet.
+  const boltEstimate = useMemo(() => {
+    const km = Math.max(0.5, distanceMeters / 1000);
+    const price = Math.round((49 + km * 18) / 5) * 5; // base 49 ₽ + 18 ₽/km
+    const rideMinutes = Math.max(2, Math.round((km / 28) * 60)); // ~28 km/h city
+    return { price, rideMinutes, pickupMinutes: 4 };
+  }, [distanceMeters]);
+
+  // Peek strip is shown only when the trip was drawn from the MAIN screen and
+  // the user hasn't yet picked a specific bus option.
+  const [peeking, setPeeking] = useState(false);
+  useEffect(() => {
+    onPeekChange?.(peeking);
+    return () => onPeekChange?.(false);
+  }, [peeking, onPeekChange]);
+  // Reset peek if we leave transit / lose the drawn-from-main flag.
+  useEffect(() => {
+    if (!drawnFromMainScreen && peeking) setPeeking(false);
+  }, [drawnFromMainScreen, peeking]);
 
   const originLabel =
     stops[0]?.originKind === 'myLocation'
@@ -295,9 +322,66 @@ export function TransitPlanner({
     );
   }
 
+  // ---------------------------------------------------------------------
+  // Peeked state — the planner is swiped down to reveal the drawn route on the
+  // map. Only a thin bottom strip remains; tapping/swiping it restores the
+  // planner. Available only for trips drawn from the main screen.
+  // ---------------------------------------------------------------------
+  if (peeking) {
+    return (
+      <View
+        className="absolute inset-x-0 bottom-0 z-40"
+        pointerEvents="box-none"
+      >
+        <Pressable
+          onPress={() => setPeeking(false)}
+          className="mx-4 mb-6 rounded-2xl bg-card px-4 py-3"
+          style={{
+            shadowColor: '#000',
+            shadowOffset: { width: 0, height: -2 },
+            shadowOpacity: 0.18,
+            shadowRadius: 10,
+            elevation: 8,
+          }}
+        >
+          <View className="mb-2 items-center">
+            <View className="h-1.5 w-10 rounded-full bg-border" />
+          </View>
+          <View className="flex-row items-center gap-2">
+            <ChevronUp size={18} color="#2563eb" />
+            <Text className="flex-1 text-sm font-medium text-foreground">
+              На карте — нарисованные участки (по дорогам)
+            </Text>
+          </View>
+          <Text className="mt-0.5 text-[11px] text-muted-foreground">
+            Конкретный автобус ещё не выбран · потяните вверх, чтобы вернуться к
+            вариантам
+          </Text>
+        </Pressable>
+      </View>
+    );
+  }
+
   return (
     <View className="absolute inset-0 z-40 bg-background">
       <SafeAreaView style={{ flex: 1 }} edges={['top']}>
+        {/* Swipe-down grabber — only for trips drawn from the main screen.
+            Pulls the planner down to reveal the drawn route on the map. */}
+        {drawnFromMainScreen ? (
+          <Pressable
+            onPress={() => setPeeking(true)}
+            className="items-center py-1.5"
+            hitSlop={8}
+          >
+            <View className="h-1.5 w-12 rounded-full bg-border" />
+            <View className="mt-1 flex-row items-center gap-1">
+              <ChevronDown size={14} color="#6b7280" />
+              <Text className="text-[11px] text-muted-foreground">
+                Смахните вниз — посмотреть нарисованный маршрут
+              </Text>
+            </View>
+          </Pressable>
+        ) : null}
         {/* Header with close + mode selector */}
         <View className="flex-row items-center gap-2 px-4 pt-1">
           <Pressable
@@ -657,6 +741,38 @@ export function TransitPlanner({
           <Text className="mx-4 mt-2 text-[10px] text-muted-foreground">
             Онлайн-отслеживание автобусов недоступно в этом регионе — данные приблизительные.
           </Text>
+
+          {/* Bolt taxi — alternative to bus, with a larger gap above. Static
+              estimate for now (real pricing to be wired later). */}
+          <View className="mx-4 mb-2 mt-6">
+            <Text className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Или вызвать такси
+            </Text>
+            <Pressable
+              onPress={() => {}}
+              className="flex-row items-center gap-3 rounded-2xl border border-border bg-card p-3 active:bg-muted/50"
+            >
+              <View
+                className="h-10 w-10 items-center justify-center rounded-xl"
+                style={{ backgroundColor: '#34D186' }}
+              >
+                <Car size={20} color="#fff" />
+              </View>
+              <View className="flex-1">
+                <Text className="text-sm font-semibold text-foreground">Bolt</Text>
+                <Text className="text-[11px] text-muted-foreground">
+                  Подача ~{boltEstimate.pickupMinutes} мин · в пути ~
+                  {boltEstimate.rideMinutes} мин
+                </Text>
+              </View>
+              <View className="items-end">
+                <Text className="text-base font-bold text-foreground">
+                  ~{boltEstimate.price} ₽
+                </Text>
+                <Text className="text-[10px] text-muted-foreground">примерно</Text>
+              </View>
+            </Pressable>
+          </View>
         </ScrollView>
       </SafeAreaView>
 

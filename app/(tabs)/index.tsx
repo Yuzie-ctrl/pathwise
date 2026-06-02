@@ -10,6 +10,7 @@ import MapView, {
   type MapRegion,
 } from '@/components/MapView';
 import { DrawCanvas } from '@/components/DrawCanvas';
+import { AmbiguityPrompt } from '@/components/AmbiguityPrompt';
 import { MallSheet } from '@/components/MallSheet';
 import { NavigationBar } from '@/components/NavigationBar';
 import { RoutePlanner } from '@/components/RoutePlanner';
@@ -18,11 +19,15 @@ import { TransitPlanner } from '@/components/TransitPlanner';
 import { TransportScheduleSheet } from '@/components/TransportScheduleSheet';
 import { Text } from '@/components/ui/text';
 import {
+  applyAmbiguityChoice,
+  detectAmbiguousSpot,
   fetchRoute,
   matchDrawnRoute,
   matchDrawnStrokes,
   midpointOfLine,
   type GeocodeResult,
+  type MatchedRoute,
+  type RouteAmbiguity,
   type TransitOption,
 } from '@/lib/routing';
 import { MALLS, type Mall } from '@/lib/malls';
@@ -70,6 +75,8 @@ export default function Home() {
   const drawnRoutes = useTripStore((s) => s.drawnRoutes);
   const addDrawnRoute = useTripStore((s) => s.addDrawnRoute);
   const setDrawnRoutes = useTripStore((s) => s.setDrawnRoutes);
+  const setDrawnStrokesAdapted = useTripStore((s) => s.setDrawnStrokesAdapted);
+  const setDrawnFromMainScreen = useTripStore((s) => s.setDrawnFromMainScreen);
 
   const [region, setRegion] = useState<MapRegion>(DEFAULT_REGION);
   const [userLocation, setUserLocation] = useState<{
@@ -98,6 +105,24 @@ export default function Home() {
   const [scheduleOpen, setScheduleOpen] = useState(false);
   /** Stop id the user is actively editing via search-sheet replace flow. */
   const [editingStopId, setEditingStopId] = useState<string | null>(null);
+
+  /**
+   * Ambiguity ("which route is better?") session. When non-null, the matched
+   * route is held pending a user choice; the map is zoomed to the fork and a
+   * top prompt lets the user cycle/choose variants.
+   */
+  const [ambiguity, setAmbiguity] = useState<{
+    spot: RouteAmbiguity;
+    matched: MatchedRoute;
+    activeIndex: number;
+  } | null>(null);
+  /** Strokes to preload into the canvas when editing an existing drawn route. */
+  const [initialStrokes, setInitialStrokes] = useState<
+    { latitude: number; longitude: number }[][] | undefined
+  >(undefined);
+  /** True while the transit planner is peeked down to reveal the drawn route. */
+  const [transitPeeking, setTransitPeeking] = useState(false);
+  const drawnStrokesAdapted = useTripStore((s) => s.drawnStrokesAdapted);
 
   const routeReqRef = useRef(0);
 
@@ -267,7 +292,60 @@ export default function Home() {
   // ---------------------------------------------------------------------
   const style = MODE_STYLE[mode];
 
+  /** Set of logical segment indices that are user-drawn overrides. */
+  const drawnSegmentIndices = useMemo(() => {
+    const set = new Set<number>();
+    if (drawnRoutes.length === 0) return set;
+    for (let i = 0; i < stops.length - 1; i++) {
+      const from = stops[i];
+      const to = stops[i + 1];
+      if (
+        drawnRoutes.some(
+          (r) => r.fromStopId === from.id && r.toStopId === to.id,
+        )
+      ) {
+        set.add(i);
+      }
+    }
+    return set;
+  }, [drawnRoutes, stops]);
+
   const polylines: MapPolyline[] = useMemo(() => {
+    // While the ambiguity prompt is open, show ONLY the active variant span
+    // (zoomed-in) so the user can clearly compare options.
+    if (ambiguity) {
+      const variant = ambiguity.spot.variants[ambiguity.activeIndex] ?? [];
+      const out: MapPolyline[] = [];
+      if (ambiguity.matched.coordinates.length >= 2) {
+        out.push({
+          id: 'amb-context',
+          coordinates: ambiguity.matched.coordinates,
+          strokeColor: '#cbd5e1',
+          strokeWidth: 4,
+        });
+      }
+      if (variant.length >= 2) {
+        out.push({
+          id: 'amb-variant',
+          coordinates: variant,
+          strokeColor: '#2563eb',
+          strokeWidth: 6,
+        });
+      }
+      return out;
+    }
+    // While the transit planner is peeked down, show ONLY the user's drawn
+    // (road-adapted) segments — no bus route, since none is chosen yet.
+    if (transitPeeking) {
+      return drawnStrokesAdapted
+        .filter((s) => s.length >= 2)
+        .map((coords, i) => ({
+          id: `drawn-peek-${i}`,
+          coordinates: coords,
+          strokeColor: '#ec4899',
+          strokeWidth: 6,
+        }));
+    }
     // During an active partial-drawing session, hide every pre-existing route
     // line — the user should see a clean canvas between the two target stops.
     if (drawing) return [];
@@ -289,16 +367,20 @@ export default function Home() {
       return [];
     }
     return legs.map((leg, i) => {
+      const segIdx = leg.segmentIndex ?? i;
+      const isDrawn = drawnSegmentIndices.has(segIdx);
       const legStyle = MODE_STYLE[leg.mode ?? mode];
       return {
         id: `leg-${i}`,
         coordinates: leg.coordinates,
-        strokeColor: legStyle.color,
-        strokeWidth: legStyle.width,
+        // Drawn segments get a distinct highlight color so the user can see
+        // exactly which part of the route they hand-drew.
+        strokeColor: isDrawn ? '#ec4899' : legStyle.color,
+        strokeWidth: isDrawn ? legStyle.width + 1 : legStyle.width,
         lineDashPattern: legStyle.dashed ? [8, 6] : undefined,
       };
     });
-  }, [legs, stops, style, mode, drawing]);
+  }, [legs, stops, style, mode, drawing, ambiguity, drawnSegmentIndices, transitPeeking, drawnStrokesAdapted]);
 
   const markers: MapMarker[] = useMemo(() => {
     const out: MapMarker[] = [];
@@ -363,11 +445,12 @@ export default function Home() {
     segments.forEach((coords, segIdx) => {
       const mid = midpointOfLine(coords);
       if (!mid) return;
+      const isDrawn = drawnSegmentIndices.has(segIdx);
       out.push({
         id: `leg-badge-${segIdx}`,
         coordinate: mid,
-        badgeText: String(segIdx + 1),
-        badgeColor: style.color,
+        badgeText: isDrawn ? `✏️ ${segIdx + 1}` : String(segIdx + 1),
+        badgeColor: isDrawn ? '#ec4899' : style.color,
       });
     });
 
@@ -419,7 +502,7 @@ export default function Home() {
       });
     }
     return out;
-  }, [stops, legs, userLocation, style, heading, drawing, drawTargetStopId, navigating, mallsVisible]);
+  }, [stops, legs, userLocation, style, heading, drawing, drawTargetStopId, navigating, mallsVisible, drawnSegmentIndices]);
 
   // ---------------------------------------------------------------------
   // Handlers
@@ -553,11 +636,7 @@ export default function Home() {
     setPlannerCollapsed(false);
   };
 
-  const applyMatchedRoute = async (matched: {
-    coordinates: { latitude: number; longitude: number }[];
-    distanceMeters: number;
-    durationSeconds: number;
-  }) => {
+  const applyMatchedRoute = async (matched: MatchedRoute) => {
     if (matched.coordinates.length < 2) {
       Alert.alert('Не удалось', 'Не получилось распознать маршрут');
       return;
@@ -590,15 +669,12 @@ export default function Home() {
       return;
     }
 
-    // Case B — fresh drawn trip (2 stops, full override)
+    // Case B — fresh drawn trip (2 stops, full override). This always comes
+    // from a main-screen drawing → default to WALKING and remember that the
+    // trip was drawn from the main screen (enables the transit peek strip).
     const first = matched.coordinates[0];
     const last = matched.coordinates[matched.coordinates.length - 1];
     clearStops();
-    // Keep whatever mode is currently selected — the drawn polyline should
-    // render using the same style rules as any other leg (dashed for
-    // walking, solid for driving/transit/cycling). Forcing walking here
-    // would visually "highlight" the drawn route differently from the
-    // rest, which is exactly what we don't want.
     setOriginToPlace({
       label: 'Начало маршрута',
       latitude: first.latitude,
@@ -621,8 +697,45 @@ export default function Home() {
         },
       ]);
     }
+    // Default to walking right after drawing from the main screen.
+    useTripStore.getState().setMode('walking');
+    setDrawnFromMainScreen(true);
+    setDrawnStrokesAdapted(
+      matched.snappedStrokes ?? [matched.coordinates],
+    );
     setDrawing(false);
+    setInitialStrokes(undefined);
     setPlannerCollapsed(true);
+  };
+
+  const finalizeMatched = async (matched: MatchedRoute) => {
+    await applyMatchedRoute(matched);
+  };
+
+  /** Run ambiguity detection on a matched route; if uncertain, open the
+   *  learning prompt instead of finalizing. Otherwise finalize directly. */
+  const maybePromptThenApply = async (
+    matched: MatchedRoute,
+    rawStrokes: { latitude: number; longitude: number }[][],
+  ) => {
+    try {
+      const spot = await detectAmbiguousSpot(rawStrokes, matched.coordinates, mode);
+      if (spot && spot.variants.length >= 2) {
+        // Hold the matched route, zoom to the fork, show the prompt.
+        setAmbiguity({ spot, matched, activeIndex: 0 });
+        setRegion({
+          latitude: spot.center.latitude,
+          longitude: spot.center.longitude,
+          latitudeDelta: spot.delta,
+          longitudeDelta: spot.delta,
+        });
+        setDrawing(false);
+        return;
+      }
+    } catch {
+      // detection failure → just finalize
+    }
+    await finalizeMatched(matched);
   };
 
   const handleConfirmDrawing = async (
@@ -631,7 +744,7 @@ export default function Home() {
     setDrawProcessing(true);
     try {
       const matched = await matchDrawnRoute(coords, mode);
-      await applyMatchedRoute(matched);
+      await maybePromptThenApply(matched, [coords]);
     } catch {
       Alert.alert('Ошибка', 'Не удалось построить маршрут по рисунку');
     } finally {
@@ -645,7 +758,7 @@ export default function Home() {
     setDrawProcessing(true);
     try {
       const matched = await matchDrawnStrokes(strokes, mode);
-      await applyMatchedRoute(matched);
+      await maybePromptThenApply(matched, strokes);
     } catch {
       Alert.alert('Ошибка', 'Не удалось построить маршрут по рисунку');
     } finally {
@@ -653,14 +766,67 @@ export default function Home() {
     }
   };
 
+  // ---- Ambiguity prompt handlers ----
+  const handleAmbiguityPrev = () =>
+    setAmbiguity((a) =>
+      a
+        ? {
+            ...a,
+            activeIndex:
+              (a.activeIndex - 1 + a.spot.variants.length) %
+              a.spot.variants.length,
+          }
+        : a,
+    );
+  const handleAmbiguityNext = () =>
+    setAmbiguity((a) =>
+      a
+        ? {
+            ...a,
+            activeIndex: (a.activeIndex + 1) % a.spot.variants.length,
+          }
+        : a,
+    );
+  const handleAmbiguityChoose = async () => {
+    if (!ambiguity) return;
+    const finalCoords = applyAmbiguityChoice(
+      ambiguity.matched.coordinates,
+      ambiguity.spot,
+      ambiguity.activeIndex,
+    );
+    const resolved: MatchedRoute = {
+      ...ambiguity.matched,
+      coordinates: finalCoords,
+    };
+    setAmbiguity(null);
+    await finalizeMatched(resolved);
+  };
+
   const handleDrawForStop = useCallback((stopId: string) => {
     setDrawTargetStopId(stopId);
+    setInitialStrokes(undefined);
+    setDrawing(true);
+  }, []);
+
+  /** Re-enter the draw canvas with the existing drawn route(s) preloaded so the
+   *  user can erase / reorder / extend them. Uses the adapted strokes captured
+   *  at draw time when available, falling back to the stored override coords. */
+  const handleEditDrawnRoute = useCallback(() => {
+    const adapted = useTripStore.getState().drawnStrokesAdapted;
+    const routes = useTripStore.getState().drawnRoutes;
+    const seed =
+      adapted.length > 0
+        ? adapted
+        : routes.map((r) => r.coordinates).filter((c) => c.length >= 2);
+    setInitialStrokes(seed.length ? seed : undefined);
+    setDrawTargetStopId(null);
     setDrawing(true);
   }, []);
 
   const handleCancelDrawing = () => {
     setDrawing(false);
     setDrawTargetStopId(null);
+    setInitialStrokes(undefined);
   };
 
   const handleSelectTransitOption = useCallback((opt: TransitOption | null) => {
@@ -935,6 +1101,7 @@ export default function Home() {
           onAddStop={openStopSearch}
           onDrawForStop={handleDrawForStop}
           onEditStop={handleEditStop}
+          onEditDrawnRoute={handleEditDrawnRoute}
         />
       ) : null}
 
@@ -948,6 +1115,7 @@ export default function Home() {
           onSelectOption={handleSelectTransitOption}
           onZoomToSegment={handleZoomToSegment}
           onEditStop={handleEditStop}
+          onPeekChange={setTransitPeeking}
         />
       ) : null}
 
@@ -961,6 +1129,18 @@ export default function Home() {
           onConfirmStrokes={handleConfirmDrawingStrokes}
           processing={drawProcessing}
           partial={drawTargetStopId !== null}
+          initialStrokes={initialStrokes}
+        />
+      ) : null}
+
+      {/* Ambiguity learning prompt */}
+      {ambiguity ? (
+        <AmbiguityPrompt
+          variantCount={ambiguity.spot.variants.length}
+          activeIndex={ambiguity.activeIndex}
+          onPrev={handleAmbiguityPrev}
+          onNext={handleAmbiguityNext}
+          onChoose={handleAmbiguityChoose}
         />
       ) : null}
 

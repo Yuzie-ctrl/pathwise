@@ -406,6 +406,13 @@ export interface MatchedRoute {
   coordinates: MatchedPoint[];
   distanceMeters: number;
   durationSeconds: number;
+  /**
+   * When multiple freehand strokes were stitched, this holds the individually
+   * road-snapped strokes (one polyline each) in draw order, so callers can
+   * render just the user-drawn parts (without the road connectors) — e.g. the
+   * transit planner peek view before a specific bus is chosen.
+   */
+  snappedStrokes?: MatchedPoint[][];
 }
 
 /**
@@ -478,7 +485,7 @@ export async function matchDrawnRoute(
   // drawing is fine we keep radius moderate (30 m) to stay on the small road
   // the user drew; coarse drawings get 60 m so major roads win. `tidy=true`
   // lets OSRM drop obvious outliers — that's what prevents the short detours.
-  const matchRadius = fine ? 30 : 60;
+  const matchRadius = fine ? 25 : 75;
   try {
     const coordsStr = resampled
       .map((p) => `${p.longitude},${p.latitude}`)
@@ -502,7 +509,6 @@ export async function matchDrawnRoute(
         // Stitch all matching segments in order into a single polyline,
         // deduping endpoint repeats.
         const stitched: MatchedPoint[] = [];
-        let dist = 0;
         let dur = 0;
         for (const m of data.matchings) {
           for (const [lon, lat] of m.geometry.coordinates) {
@@ -516,18 +522,41 @@ export async function matchDrawnRoute(
               stitched.push(pt);
             }
           }
-          dist += m.distance ?? 0;
           dur += m.duration ?? 0;
         }
         if (stitched.length >= 2) {
-          // Post-process: strip tiny back-and-forth spurs introduced when
-          // /match briefly detours into a side street and returns. We walk
-          // the polyline and look for short "U-turn" sub-sections (enter
-          // and exit a detour within <80 m) and cut them out.
-          const deSpurred = removeShortDetours(stitched, 80);
-          const finalDist = dist || routeDistanceMetersFlat(deSpurred);
+          // Post-process to make the line look like a planned route, not a
+          // freehand trace:
+          //   1) cut short enter-then-exit detours / on-the-spot loops
+          //   2) Douglas–Peucker simplify to drop micro zig-zags on a road
+          //      that is essentially straight (epsilon scales with how
+          //      carefully the user drew — fine drawings keep more detail).
+          const deSpurred = removeShortDetours(stitched, fine ? 60 : 160);
+          const epsilon = fine ? 6 : 16;
+          const smoothed = simplifyPolyline(deSpurred, epsilon);
+          let finalCoords = smoothed.length >= 2 ? smoothed : deSpurred;
+          // 3) For coarse drawings, run a final road-snapping pass: re-route
+          //    along the network through the simplified waypoints. This forces
+          //    the line to follow the optimal road between sparse anchors and
+          //    eliminates the residual "circles" and stray alley dips that
+          //    /match leaves behind. Fine drawings skip this so deliberately
+          //    traced minor paths are preserved verbatim.
+          if (!fine) {
+            const refined = await refineAlongRoads(
+              finalCoords,
+              profile,
+              signal,
+            );
+            if (refined && refined.length >= 2) {
+              finalCoords = simplifyPolyline(
+                removeShortDetours(refined, 160),
+                16,
+              );
+            }
+          }
+          const finalDist = routeDistanceMetersFlat(finalCoords);
           return {
-            coordinates: deSpurred,
+            coordinates: finalCoords,
             distanceMeters: finalDist,
             durationSeconds: dur || Math.round(finalDist / AVG_SPEED_MPS.driving),
           };
@@ -561,10 +590,12 @@ export async function matchDrawnRoute(
           latitude: lat,
           longitude: lon,
         }));
-        const deSpurred = removeShortDetours(coords2, 80);
+        const deSpurred = removeShortDetours(coords2, fine ? 60 : 120);
+        const smoothed = simplifyPolyline(deSpurred, fine ? 6 : 14);
+        const finalCoords = smoothed.length >= 2 ? smoothed : deSpurred;
         return {
-          coordinates: deSpurred,
-          distanceMeters: r.distance,
+          coordinates: finalCoords,
+          distanceMeters: routeDistanceMetersFlat(finalCoords),
           durationSeconds: r.duration,
         };
       }
@@ -584,6 +615,148 @@ export async function matchDrawnRoute(
     durationSeconds: rawDist / 8.3,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Ambiguity detection — "which route is better?" learning prompt
+// ---------------------------------------------------------------------------
+
+export interface RouteAmbiguity {
+  /** Map center to zoom to while asking the question. */
+  center: { latitude: number; longitude: number };
+  /** Suggested camera delta (degrees) for the zoom. */
+  delta: number;
+  /** Candidate local route variants (2–3) for the uncertain span. */
+  variants: { latitude: number; longitude: number }[][];
+  /** Index range in `full` that the variants replace (so a choice can be applied). */
+  startIndex: number;
+  endIndex: number;
+}
+
+/**
+ * Detect ONE place where the snapped route diverges noticeably from what the
+ * user drew — a spot where the AI is genuinely uncertain whether to dive into
+ * a side street. Returns null when the snap closely follows the drawing
+ * everywhere (no need to bother the user).
+ *
+ * Heuristic: resample both the raw drawing and the snapped result, then find
+ * the snapped point that is farthest from the drawing. If that gap exceeds a
+ * threshold (and the user drew coarsely, i.e. wasn't deliberately tracing a
+ * tiny alley), build two local variants:
+ *   1) the snapped span (AI's current guess)
+ *   2) a "straighter / stay-on-main-road" span that ignores the wiggle
+ */
+export async function detectAmbiguousSpot(
+  rawStrokes: { latitude: number; longitude: number }[][],
+  snapped: { latitude: number; longitude: number }[],
+  mode: TransportMode,
+  signal?: AbortSignal,
+): Promise<RouteAmbiguity | null> {
+  const raw = rawStrokes.flat();
+  if (raw.length < 4 || snapped.length < 4) return null;
+
+  // Total drawing length — short drawings rarely have a meaningful fork.
+  let total = 0;
+  for (let i = 1; i < raw.length; i++) total += haversine(raw[i - 1], raw[i]);
+  if (total < 200) return null;
+
+  // For each snapped point, distance to the nearest raw point.
+  let worstIdx = -1;
+  let worstDist = 0;
+  for (let i = 1; i < snapped.length - 1; i++) {
+    let best = Infinity;
+    for (let j = 0; j < raw.length; j++) {
+      const d = haversine(snapped[i], raw[j]);
+      if (d < best) best = d;
+      if (best < 15) break;
+    }
+    if (best > worstDist) {
+      worstDist = best;
+      worstIdx = i;
+    }
+  }
+
+  // Only ask when the divergence is real (40–250 m). Below 40 m the snap is
+  // basically on the drawing; above 250 m it's likely a snap failure, not a
+  // genuine fork worth a learning prompt.
+  if (worstIdx < 0 || worstDist < 40 || worstDist > 250) return null;
+
+  // Local span around the divergence (a few hundred metres).
+  const spanStart = Math.max(0, worstIdx - 6);
+  const spanEnd = Math.min(snapped.length - 1, worstIdx + 6);
+  const a = snapped[spanStart];
+  const b = snapped[spanEnd];
+
+  // Variant 1 — AI's current snapped span.
+  const variant1 = snapped.slice(spanStart, spanEnd + 1);
+
+  // Variant 2 — a direct road route between the span endpoints that avoids
+  // forcing the wiggle (straighter / stays on bigger roads).
+  const profile = OSRM_PROFILES[mode];
+  let variant2: { latitude: number; longitude: number }[] = [a, b];
+  try {
+    const alt = await tryOsrmRoute(profile, a, b, signal);
+    if (alt.coordinates.length >= 2) {
+      variant2 = simplifyPolyline(alt.coordinates, 8);
+    }
+  } catch {
+    // keep straight fallback
+  }
+
+  // If the two variants are essentially identical, there's no real choice.
+  if (polylinesSimilar(variant1, variant2, 25)) return null;
+
+  const lats = [...variant1, ...variant2].map((p) => p.latitude);
+  const lons = [...variant1, ...variant2].map((p) => p.longitude);
+  const minLat = Math.min(...lats);
+  const maxLat = Math.max(...lats);
+  const minLon = Math.min(...lons);
+  const maxLon = Math.max(...lons);
+  const delta = Math.max(0.004, (maxLat - minLat) * 2.2, (maxLon - minLon) * 2.2);
+
+  return {
+    center: {
+      latitude: (minLat + maxLat) / 2,
+      longitude: (minLon + maxLon) / 2,
+    },
+    delta,
+    variants: [variant1, variant2],
+    startIndex: spanStart,
+    endIndex: spanEnd,
+  };
+}
+
+/** Replace a span [startIndex, endIndex] in `full` with `variant` coords. */
+export function applyAmbiguityChoice(
+  full: { latitude: number; longitude: number }[],
+  ambiguity: RouteAmbiguity,
+  variantIndex: number,
+): { latitude: number; longitude: number }[] {
+  const variant = ambiguity.variants[variantIndex];
+  if (!variant || variant.length < 2) return full;
+  const head = full.slice(0, ambiguity.startIndex);
+  const tail = full.slice(ambiguity.endIndex + 1);
+  return [...head, ...variant, ...tail];
+}
+
+/** Roughly equal polylines — average nearest-point distance under threshold. */
+function polylinesSimilar(
+  a: { latitude: number; longitude: number }[],
+  b: { latitude: number; longitude: number }[],
+  thresholdMeters: number,
+): boolean {
+  if (a.length === 0 || b.length === 0) return true;
+  let sum = 0;
+  for (const p of a) {
+    let best = Infinity;
+    for (const q of b) {
+      const d = haversine(p, q);
+      if (d < best) best = d;
+    }
+    sum += best;
+  }
+  return sum / a.length < thresholdMeters;
+}
+
 
 /**
  * Match a *set* of freehand strokes into one continuous road-network route.
@@ -623,7 +796,8 @@ export async function matchDrawnStrokes(
   if (matchedStrokes.length === 0) {
     return { coordinates: [], distanceMeters: 0, durationSeconds: 0 };
   }
-  if (matchedStrokes.length === 1) return matchedStrokes[0];
+  if (matchedStrokes.length === 1)
+    return { ...matchedStrokes[0], snappedStrokes: [matchedStrokes[0].coordinates] };
 
   // 2) Stitch: stroke[0] → road-route gap → stroke[1] → road-route gap → …
   const stitched: MatchedPoint[] = [];
@@ -675,16 +849,78 @@ export async function matchDrawnStrokes(
     coordinates: stitched,
     distanceMeters: totalDist,
     durationSeconds: totalDur || Math.round(totalDist / speed),
+    snappedStrokes: matchedStrokes.map((m) => m.coordinates),
   };
+}
+
+/**
+ * Re-route a simplified polyline along the road network so the line follows
+ * optimal roads between sparse anchors (instead of /match's freehand-traced
+ * detours). We pick a handful of anchor waypoints from the simplified line,
+ * ask OSRM /route to connect them with generous radii, and return the road
+ * geometry. Returns null on failure so the caller keeps its current line.
+ */
+async function refineAlongRoads(
+  coords: { latitude: number; longitude: number }[],
+  profile: string,
+  signal?: AbortSignal,
+): Promise<{ latitude: number; longitude: number }[] | null> {
+  if (coords.length < 3) return null;
+  // OSRM allows many waypoints, but keep it bounded. Resample to evenly
+  // spaced anchors (max 25) so the route is constrained to the drawn path
+  // without forcing micro-detours.
+  const anchorCount = Math.min(25, Math.max(3, Math.round(coords.length / 2)));
+  const anchors = resampleByDistance(coords, anchorCount);
+  try {
+    const coordsStr = anchors
+      .map((p) => `${p.longitude},${p.latitude}`)
+      .join(';');
+    // Wide radii (90 m) let OSRM snap each anchor to the best nearby road,
+    // smoothing out alley dips while staying on the drawn corridor.
+    const radii = anchors.map(() => 90).join(';');
+    const url =
+      `https://router.project-osrm.org/route/v1/${profile}/${coordsStr}` +
+      `?overview=full&geometries=geojson&continue_straight=true&radiuses=${radii}`;
+    const res = await fetch(url, { signal });
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      code: string;
+      routes?: { geometry: { coordinates: [number, number][] } }[];
+    };
+    if (data.code !== 'Ok' || !data.routes?.length) return null;
+    return data.routes[0].geometry.coordinates.map(([lon, lat]) => ({
+      latitude: lat,
+      longitude: lon,
+    }));
+  } catch {
+    return null;
+  }
 }
 
 /**
  * Walk the polyline and drop short "enter-then-exit" detours.
  * A detour is detected when the polyline leaves the running main axis
  * for a short distance (< maxDetourMeters) and comes back near its entry
- * point — typical /match side-street false positives.
+ * point — typical /match side-street false positives. Iterated a few times
+ * because removing one loop can expose another that was nested inside it.
  */
 function removeShortDetours(
+  coords: { latitude: number; longitude: number }[],
+  maxDetourMeters: number,
+): { latitude: number; longitude: number }[] {
+  let cur = coords;
+  for (let pass = 0; pass < 3; pass++) {
+    const next = removeShortDetoursOnce(cur, maxDetourMeters);
+    if (next.length === cur.length) {
+      cur = next;
+      break;
+    }
+    cur = next;
+  }
+  return cur;
+}
+
+function removeShortDetoursOnce(
   coords: { latitude: number; longitude: number }[],
   maxDetourMeters: number,
 ): { latitude: number; longitude: number }[] {
@@ -693,28 +929,95 @@ function removeShortDetours(
   let i = 1;
   while (i < coords.length) {
     const here = coords[i];
-    // Look ahead up to 30 points for a point that is close to `here` —
-    // if found quickly and the detour length is small, skip the loop.
+    // Look ahead up to 40 points for a point that returns close to `here` —
+    // if found and the excursion length is small, skip the whole loop. The
+    // return threshold is wider (30 m) so "circles on the spot" get cut too.
     let loopEndIdx = -1;
     let accLen = 0;
-    const maxLookAhead = Math.min(30, coords.length - i - 1);
+    const maxLookAhead = Math.min(40, coords.length - i - 1);
     for (let j = 1; j <= maxLookAhead; j++) {
       accLen += haversine(coords[i + j - 1], coords[i + j]);
       if (accLen > maxDetourMeters) break;
-      if (haversine(here, coords[i + j]) < 20 && accLen > 40) {
+      // A genuine loop returns near its entry after travelling more than the
+      // straight-line gap would justify — detect both small U-turns and tight
+      // on-the-spot circles.
+      if (haversine(here, coords[i + j]) < 30 && accLen > 35) {
         loopEndIdx = i + j;
-        break;
       }
     }
     out.push(here);
     if (loopEndIdx > -1) {
-      // Jump past the loop.
       i = loopEndIdx + 1;
     } else {
       i++;
     }
   }
   return out;
+}
+
+/**
+ * Douglas–Peucker simplification — removes points that lie within `epsilon`
+ * metres of the straight segment between their neighbours. This is what
+ * smooths out the jagged micro-zig-zags /match leaves on a road that is
+ * essentially straight, without dropping real corners.
+ */
+function simplifyPolyline(
+  coords: { latitude: number; longitude: number }[],
+  epsilonMeters: number,
+): { latitude: number; longitude: number }[] {
+  if (coords.length <= 2) return coords.slice();
+  const keep = new Array(coords.length).fill(false);
+  keep[0] = true;
+  keep[coords.length - 1] = true;
+
+  const stack: [number, number][] = [[0, coords.length - 1]];
+  while (stack.length) {
+    const [start, end] = stack.pop()!;
+    let maxDist = 0;
+    let idx = -1;
+    for (let i = start + 1; i < end; i++) {
+      const d = perpDistanceMeters(coords[i], coords[start], coords[end]);
+      if (d > maxDist) {
+        maxDist = d;
+        idx = i;
+      }
+    }
+    if (maxDist > epsilonMeters && idx !== -1) {
+      keep[idx] = true;
+      stack.push([start, idx]);
+      stack.push([idx, end]);
+    }
+  }
+  return coords.filter((_, i) => keep[i]);
+}
+
+/** Perpendicular distance (m) of point p to the segment a→b, using a local
+ *  equirectangular approximation (fine for the short spans we work with). */
+function perpDistanceMeters(
+  p: { latitude: number; longitude: number },
+  a: { latitude: number; longitude: number },
+  b: { latitude: number; longitude: number },
+): number {
+  const R = 6371000;
+  const toRad = (x: number) => (x * Math.PI) / 180;
+  const latRef = toRad((a.latitude + b.latitude) / 2);
+  const x = (lon: number) => toRad(lon) * Math.cos(latRef) * R;
+  const y = (lat: number) => toRad(lat) * R;
+  const ax = x(a.longitude);
+  const ay = y(a.latitude);
+  const bx = x(b.longitude);
+  const by = y(b.latitude);
+  const px = x(p.longitude);
+  const py = y(p.latitude);
+  const dx = bx - ax;
+  const dy = by - ay;
+  const len2 = dx * dx + dy * dy;
+  if (len2 === 0) return Math.hypot(px - ax, py - ay);
+  let t = ((px - ax) * dx + (py - ay) * dy) / len2;
+  t = Math.max(0, Math.min(1, t));
+  const cx = ax + t * dx;
+  const cy = ay + t * dy;
+  return Math.hypot(px - cx, py - cy);
 }
 
 function routeDistanceMetersFlat(
