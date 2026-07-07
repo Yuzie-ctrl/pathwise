@@ -46,17 +46,30 @@ import {
   type TransportMode,
 } from '@/lib/stores/tripStore';
 
-const MODE_CONFIG: Record<TransportMode, { icon: typeof Car; label: string }> = {
-  driving: { icon: Car, label: 'Авто' },
-  walking: { icon: Footprints, label: 'Пешком' },
-  transit: { icon: Bus, label: 'Автобус' },
-  cycling: { icon: Bike, label: 'Вело' },
-};
+const MODE_CONFIG: Record<TransportMode, { icon: typeof Car; label: string }> =
+  {
+    driving: { icon: Car, label: 'Авто' },
+    walking: { icon: Footprints, label: 'Пешком' },
+    transit: { icon: Bus, label: 'Автобус' },
+    cycling: { icon: Bike, label: 'Вело' },
+  };
 
 // Авто, Пешком, Автобус, Вело — explicit order per product brief.
-const MODE_ORDER: TransportMode[] = ['driving', 'walking', 'transit', 'cycling'];
+const MODE_ORDER: TransportMode[] = [
+  'driving',
+  'walking',
+  'transit',
+  'cycling',
+];
 
-const STOP_COLORS = ['#22c55e', '#ef4444', '#f59e0b', '#8b5cf6', '#06b6d4', '#ec4899'];
+const STOP_COLORS = [
+  '#22c55e',
+  '#ef4444',
+  '#f59e0b',
+  '#8b5cf6',
+  '#06b6d4',
+  '#ec4899',
+];
 
 interface TransitPlannerProps {
   onClose: () => void;
@@ -101,7 +114,8 @@ export function TransitPlanner({
   const moveStop = useTripStore((s) => s.moveStop);
 
   const [stopsCollapsed, setStopsCollapsed] = useState(false);
-  const [timePickerKind, setTimePickerKind] = useState<TimePickerKind>('depart');
+  const [timePickerKind, setTimePickerKind] =
+    useState<TimePickerKind>('depart');
   const [timeModal, setTimeModal] = useState(false);
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
   const [filterOpen, setFilterOpen] = useState(false);
@@ -111,10 +125,12 @@ export function TransitPlanner({
   >([]);
   const [detailOption, setDetailOption] = useState<TransitOption | null>(null);
   /** Detail sheet vertical position. */
-  const [detailPos, setDetailPos] = useState<'compact' | 'expanded' | 'collapsed'>(
-    'compact',
+  const [detailPos, setDetailPos] = useState<
+    'compact' | 'expanded' | 'collapsed'
+  >('compact');
+  const [dwellPickerStopId, setDwellPickerStopId] = useState<string | null>(
+    null,
   );
-  const [dwellPickerStopId, setDwellPickerStopId] = useState<string | null>(null);
   const dwellStop = stops.find((s) => s.id === dwellPickerStopId);
 
   const travelSeconds = totalTravelSeconds(legs);
@@ -185,13 +201,7 @@ export function TransitPlanner({
   const destLon = lastStop?.longitude ?? 0;
 
   useEffect(() => {
-    if (
-      !originLat ||
-      !originLon ||
-      !destLat ||
-      !destLon ||
-      stops.length < 2
-    ) {
+    if (!originLat || !originLon || !destLat || !destLon || stops.length < 2) {
       setGtfsOptions([]);
       return;
     }
@@ -240,7 +250,10 @@ export function TransitPlanner({
     [gtfsOptions, syntheticOptions],
   );
 
-  const availableLines = useMemo(() => allTransitLines(allOptions), [allOptions]);
+  const availableLines = useMemo(
+    () => allTransitLines(allOptions),
+    [allOptions],
+  );
 
   const filteredOptions = useMemo(() => {
     let list = allOptions;
@@ -401,7 +414,9 @@ export function TransitPlanner({
                   key={m}
                   onPress={() => setMode(m)}
                   className={`flex-1 items-center justify-center gap-0.5 rounded-xl border py-2 ${
-                    active ? 'border-primary bg-primary' : 'border-border bg-muted'
+                    active
+                      ? 'border-primary bg-primary'
+                      : 'border-border bg-muted'
                   }`}
                 >
                   <Icon size={16} color={active ? '#fff' : '#444'} />
@@ -431,7 +446,10 @@ export function TransitPlanner({
               <Text className="text-[10px] font-medium text-muted-foreground">
                 {timePickerKind === 'depart' ? 'Отправление' : 'Прибытие'}
               </Text>
-              <Text className="text-xs font-semibold text-foreground" numberOfLines={1}>
+              <Text
+                className="text-xs font-semibold text-foreground"
+                numberOfLines={1}
+              >
                 {formatTimePickerLabel(selectedDate)}
               </Text>
             </View>
@@ -449,7 +467,9 @@ export function TransitPlanner({
             <Filter
               size={16}
               color={
-                selectedLines.length + selectedKinds.length > 0 ? '#2563eb' : '#666'
+                selectedLines.length + selectedKinds.length > 0
+                  ? '#2563eb'
+                  : '#666'
               }
             />
             {selectedLines.length + selectedKinds.length > 0 ? (
@@ -469,21 +489,21 @@ export function TransitPlanner({
               Вид транспорта
             </Text>
             <View className="mb-3 flex-row flex-wrap gap-2">
-              {(
-                [
-                  { k: 'bus' as const, label: 'Автобус' },
-                  { k: 'tram' as const, label: 'Трамвай' },
-                  { k: 'trolley' as const, label: 'Троллейбус' },
-                  { k: 'train' as const, label: 'Поезд' },
-                ]
-              ).map((opt) => {
+              {[
+                { k: 'bus' as const, label: 'Автобус' },
+                { k: 'tram' as const, label: 'Трамвай' },
+                { k: 'trolley' as const, label: 'Троллейбус' },
+                { k: 'train' as const, label: 'Поезд' },
+              ].map((opt) => {
                 const active = selectedKinds.includes(opt.k);
                 return (
                   <Pressable
                     key={opt.k}
                     onPress={() => toggleKind(opt.k)}
                     className={`rounded-full border px-3 py-1 ${
-                      active ? 'border-primary bg-primary' : 'border-border bg-muted'
+                      active
+                        ? 'border-primary bg-primary'
+                        : 'border-border bg-muted'
                     }`}
                   >
                     <Text
@@ -545,7 +565,9 @@ export function TransitPlanner({
               const isOrigin = idx === 0;
               const isLast = idx === stops.length - 1;
               const stopText = stop.label;
-              const hasDrawnToThis = drawnRoutes.some((r) => r.toStopId === stop.id);
+              const hasDrawnToThis = drawnRoutes.some(
+                (r) => r.toStopId === stop.id,
+              );
               return (
                 <View key={stop.id} className="px-4">
                   <View className="flex-row items-center gap-2 py-1.5">
@@ -559,7 +581,10 @@ export function TransitPlanner({
                     </View>
                     {isOrigin ? (
                       <Pressable onPress={onChangeOrigin} className="flex-1">
-                        <Text className="text-sm text-foreground" numberOfLines={1}>
+                        <Text
+                          className="text-sm text-foreground"
+                          numberOfLines={1}
+                        >
                           <Text className="text-sm text-muted-foreground">
                             Точка 1.{' '}
                           </Text>
@@ -575,7 +600,10 @@ export function TransitPlanner({
                         }
                         className="flex-1 rounded-md px-1 py-0.5 active:bg-muted"
                       >
-                        <Text className="text-sm text-foreground" numberOfLines={1}>
+                        <Text
+                          className="text-sm text-foreground"
+                          numberOfLines={1}
+                        >
                           <Text className="text-sm text-muted-foreground">
                             Точка {idx + 1}.{' '}
                           </Text>
@@ -629,7 +657,10 @@ export function TransitPlanner({
                           disabled={idx <= 1}
                           className="p-0.5"
                         >
-                          <ArrowUp size={13} color={idx <= 1 ? '#ccc' : '#666'} />
+                          <ArrowUp
+                            size={13}
+                            color={idx <= 1 ? '#ccc' : '#666'}
+                          />
                         </Pressable>
                         <Pressable
                           onPress={() => moveStop(stop.id, 1)}
@@ -637,7 +668,10 @@ export function TransitPlanner({
                           disabled={isLast}
                           className="p-0.5"
                         >
-                          <ArrowDown size={13} color={isLast ? '#ccc' : '#666'} />
+                          <ArrowDown
+                            size={13}
+                            color={isLast ? '#ccc' : '#666'}
+                          />
                         </Pressable>
                       </View>
                     ) : null}
@@ -691,7 +725,9 @@ export function TransitPlanner({
         >
           {(loadingRoute || gtfsLoading) && filteredOptions.length === 0 ? (
             <View className="mx-4 rounded-2xl bg-muted p-4">
-              <Text className="text-sm text-muted-foreground">Ищем варианты…</Text>
+              <Text className="text-sm text-muted-foreground">
+                Ищем варианты…
+              </Text>
             </View>
           ) : null}
           {!loadingRoute &&
@@ -717,7 +753,12 @@ export function TransitPlanner({
               <View className="flex-row items-center justify-between">
                 <View className="flex-1 flex-row flex-wrap items-center gap-1.5">
                   {opt.segments.map((seg, i) => (
-                    <SegmentChip key={i} segment={seg} index={i} total={opt.segments.length} />
+                    <SegmentChip
+                      key={i}
+                      segment={seg}
+                      index={i}
+                      total={opt.segments.length}
+                    />
                   ))}
                 </View>
                 <View className="ml-2 items-end">
@@ -739,7 +780,8 @@ export function TransitPlanner({
             </Pressable>
           ))}
           <Text className="mx-4 mt-2 text-[10px] text-muted-foreground">
-            Онлайн-отслеживание автобусов недоступно в этом регионе — данные приблизительные.
+            Онлайн-отслеживание автобусов недоступно в этом регионе — данные
+            приблизительные.
           </Text>
 
           {/* Bolt taxi — alternative to bus, with a larger gap above. Static
@@ -759,7 +801,9 @@ export function TransitPlanner({
                 <Car size={20} color="#fff" />
               </View>
               <View className="flex-1">
-                <Text className="text-sm font-semibold text-foreground">Bolt</Text>
+                <Text className="text-sm font-semibold text-foreground">
+                  Bolt
+                </Text>
                 <Text className="text-[11px] text-muted-foreground">
                   Подача ~{boltEstimate.pickupMinutes} мин · в пути ~
                   {boltEstimate.rideMinutes} мин
@@ -769,7 +813,9 @@ export function TransitPlanner({
                 <Text className="text-base font-bold text-foreground">
                   ~{boltEstimate.price} ₽
                 </Text>
-                <Text className="text-[10px] text-muted-foreground">примерно</Text>
+                <Text className="text-[10px] text-muted-foreground">
+                  примерно
+                </Text>
               </View>
             </Pressable>
           </View>
@@ -901,7 +947,11 @@ function DetailSheet({
       className="overflow-hidden rounded-t-3xl bg-card"
     >
       {/* Grabber */}
-      <Pressable onPress={onTogglePosition} className="items-center py-2" hitSlop={10}>
+      <Pressable
+        onPress={onTogglePosition}
+        className="items-center py-2"
+        hitSlop={10}
+      >
         <View className="h-1.5 w-12 rounded-full bg-muted-foreground/40" />
       </Pressable>
 
@@ -923,7 +973,9 @@ function DetailSheet({
                   className="rounded-sm px-1.5 py-0.5"
                   style={{ backgroundColor: '#dc2626' }}
                 >
-                  <Text className="text-[11px] font-bold text-white">{p.line}</Text>
+                  <Text className="text-[11px] font-bold text-white">
+                    {p.line}
+                  </Text>
                 </View>
               </View>
               {i < pillSummary.length - 1 ? (
@@ -954,7 +1006,11 @@ function DetailSheet({
 
       {position !== 'collapsed' ? (
         <ScrollView
-          contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 16, paddingBottom: 32 }}
+          contentContainerStyle={{
+            paddingHorizontal: 16,
+            paddingVertical: 16,
+            paddingBottom: 32,
+          }}
           showsVerticalScrollIndicator={false}
         >
           <Timeline
@@ -1059,7 +1115,10 @@ function Timeline({
     } else {
       // Detect consecutive bus segments at a shared transfer stop.
       const isTransferNext =
-        next && next.kind === 'bus' && next.from === seg.to && seg.to === next.from;
+        next &&
+        next.kind === 'bus' &&
+        next.from === seg.to &&
+        seg.to === next.from;
 
       // Bus arrives at "seg.to" — after the bus ride, render a stop marker
       // labelled with `seg.to` (unless the very next segment continues at
@@ -1124,11 +1183,16 @@ function Timeline({
         <MapPin size={20} color="#dc2626" fill="#dc2626" />
       </View>
       <View className="flex-1 pb-3">
-        <Text className="text-base font-semibold text-foreground" numberOfLines={1}>
+        <Text
+          className="text-base font-semibold text-foreground"
+          numberOfLines={1}
+        >
           {destination}
         </Text>
       </View>
-      <Text className="text-sm font-semibold text-foreground">{time(totalElapsed)}</Text>
+      <Text className="text-sm font-semibold text-foreground">
+        {time(totalElapsed)}
+      </Text>
     </View>,
   );
 
@@ -1174,7 +1238,9 @@ function LocationRow({
           >
             {label}
           </Text>
-          <Text className="ml-2 text-sm font-semibold text-foreground">{time}</Text>
+          <Text className="ml-2 text-sm font-semibold text-foreground">
+            {time}
+          </Text>
         </View>
         {subLabel ? (
           <Text className="text-xs text-muted-foreground" numberOfLines={1}>
@@ -1201,7 +1267,7 @@ function WalkRow({
   // Show where the walk leads (e.g. the bus stop name) so walk→bus alternation
   // is legible: "Пешком 5 мин (300 м) · до ост. Sadama".
   const dest =
-    toLabel && toLabel !== 'Остановка' && !/^Остановка/.test(toLabel)
+    toLabel && toLabel !== 'Остановка' && !toLabel.startsWith('Остановка')
       ? toLabel
       : null;
   return (
@@ -1231,7 +1297,8 @@ function WalkRow({
             Пешком {minutes} мин. ({formatDistance(distanceM)})
             {dest ? (
               <Text className="text-sm text-muted-foreground">
-                {' '}· до ост. {dest}
+                {' '}
+                · до ост. {dest}
               </Text>
             ) : null}
           </Text>
@@ -1317,16 +1384,14 @@ function BusRow({
             <ChevronDown size={14} color="#777" />
           )}
           <Text className="text-xs text-muted-foreground">
-            Сколько ехать: {stopsCount > 0 ? `${stopsCount} ост. ` : ''}({minutes} мин.)
+            Сколько ехать: {stopsCount > 0 ? `${stopsCount} ост. ` : ''}(
+            {minutes} мин.)
           </Text>
         </Pressable>
         {stopsOpen && intermediateStops && intermediateStops.length > 0 ? (
           <View className="mt-2 rounded-lg bg-muted/40 px-3 py-2">
             {intermediateStops.map((name, idx) => (
-              <View
-                key={idx}
-                className="flex-row items-center gap-2 py-1"
-              >
+              <View key={idx} className="flex-row items-center gap-2 py-1">
                 <View
                   style={{
                     width: 6,
@@ -1381,7 +1446,9 @@ function TransferRow({
           >
             {location}
           </Text>
-          <Text className="ml-2 text-sm font-semibold text-foreground">{time}</Text>
+          <Text className="ml-2 text-sm font-semibold text-foreground">
+            {time}
+          </Text>
         </View>
         <View className="mt-1 flex-row items-center gap-2">
           <View
@@ -1433,14 +1500,19 @@ function DwellRow({
       </View>
       <View className="flex-1 flex-row items-center justify-between pb-3">
         <View className="flex-1">
-          <Text className="text-sm font-semibold text-foreground" numberOfLines={1}>
+          <Text
+            className="text-sm font-semibold text-foreground"
+            numberOfLines={1}
+          >
             Пауза · {minutes} мин
           </Text>
           <Text className="text-xs text-muted-foreground" numberOfLines={1}>
             {location}
           </Text>
         </View>
-        <Text className="ml-2 text-sm font-semibold text-foreground">{time}</Text>
+        <Text className="ml-2 text-sm font-semibold text-foreground">
+          {time}
+        </Text>
       </View>
     </View>
   );

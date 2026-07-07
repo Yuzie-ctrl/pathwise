@@ -22,13 +22,17 @@ export const useTransportFavorites = create<TransportFavoritesState>()(
           const next: TransportFavorite = { ...fav, addedAt: Date.now() };
           if (exists) {
             return {
-              favorites: state.favorites.map((f) => (f.id === fav.id ? next : f)),
+              favorites: state.favorites.map((f) =>
+                f.id === fav.id ? next : f,
+              ),
             };
           }
           return { favorites: [next, ...state.favorites].slice(0, 30) };
         }),
       removeFavorite: (id) =>
-        set((state) => ({ favorites: state.favorites.filter((f) => f.id !== id) })),
+        set((state) => ({
+          favorites: state.favorites.filter((f) => f.id !== id),
+        })),
       bumpFavorite: (id) =>
         set((state) => ({
           favorites: state.favorites.map((f) =>

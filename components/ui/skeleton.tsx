@@ -9,7 +9,11 @@ export interface SkeletonProps extends ViewProps {
   variant?: 'default' | 'circular' | 'text';
 }
 
-export function Skeleton({ variant = 'default', className, ...props }: SkeletonProps) {
+export function Skeleton({
+  variant = 'default',
+  className,
+  ...props
+}: SkeletonProps) {
   const [width, setWidth] = useState(0);
 
   return (

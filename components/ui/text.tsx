@@ -35,8 +35,7 @@ const textVariants = cva('font-normal', {
 });
 
 export interface TextProps
-  extends RNTextProps,
-    VariantProps<typeof textVariants> {
+  extends RNTextProps, VariantProps<typeof textVariants> {
   className?: string;
 }
 

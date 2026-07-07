@@ -134,7 +134,10 @@ function parseGtfsTimeToMinutes(t: string | null | undefined): number | null {
   return hh * 60 + mm; // can be >= 1440 for post-midnight trips — fine.
 }
 
-function routeTypeToVehicleKind(routeType: number, shortName: string): VehicleKind {
+function routeTypeToVehicleKind(
+  routeType: number,
+  shortName: string,
+): VehicleKind {
   // GTFS route_type: 0=tram/light rail, 2=rail, 3=bus, 11=trolley, 800=trolley.
   if (routeType === 0) return 'tram';
   if (routeType === 11 || routeType === 800) return 'trolley';
@@ -265,8 +268,8 @@ export function authorityLabel(raw: string | null | undefined): string {
     'Võru MV': 'Вырумаа',
     'Järvamaa ÜTK': 'Ярвамаа',
     'Jõgeva ÜTK': 'Йыгевамаа',
-    'MKM': 'MKM',
-    'Maanteeamet': 'Maanteeamet',
+    MKM: 'MKM',
+    Maanteeamet: 'Maanteeamet',
   };
   return map[raw] ?? raw;
 }
@@ -341,7 +344,9 @@ export async function searchRoutes(q: string): Promise<TransportRoute[]> {
   return ((data ?? []) as RawRoute[]).map(mapRoute);
 }
 
-export async function fetchRoute(routeId: string): Promise<TransportRoute | null> {
+export async function fetchRoute(
+  routeId: string,
+): Promise<TransportRoute | null> {
   const { data, error } = await supabase
     .from(ROUTES_TABLE)
     .select(
@@ -353,7 +358,9 @@ export async function fetchRoute(routeId: string): Promise<TransportRoute | null
   return data ? mapRoute(data as RawRoute) : null;
 }
 
-export async function fetchRouteTrips(routeId: string): Promise<TransportTrip[]> {
+export async function fetchRouteTrips(
+  routeId: string,
+): Promise<TransportTrip[]> {
   // Many GTFS feeds have dozens of trips per route (one per service). For the
   // "choose direction" view we only need one representative trip per direction.
   const { data, error } = await supabase
@@ -377,7 +384,9 @@ export async function fetchRouteTrips(routeId: string): Promise<TransportTrip[]>
   return out;
 }
 
-export async function fetchStopById(stopId: string): Promise<TransportStop | null> {
+export async function fetchStopById(
+  stopId: string,
+): Promise<TransportStop | null> {
   const idNum = Number.parseInt(stopId, 10);
   if (Number.isNaN(idNum)) return null;
   const { data, error } = await supabase
@@ -389,7 +398,9 @@ export async function fetchStopById(stopId: string): Promise<TransportStop | nul
   return data ? mapStop(data as RawStop) : null;
 }
 
-export async function fetchTripStops(tripId: string): Promise<RouteStopListItem[]> {
+export async function fetchTripStops(
+  tripId: string,
+): Promise<RouteStopListItem[]> {
   const idNum = Number.parseInt(tripId, 10);
   if (Number.isNaN(idNum)) return [];
 
@@ -409,7 +420,8 @@ export async function fetchTripStops(tripId: string): Promise<RouteStopListItem[
   if (times.length === 0) return [];
 
   const firstMinutes =
-    parseGtfsTimeToMinutes(times[0].departure_time ?? times[0].arrival_time) ?? 0;
+    parseGtfsTimeToMinutes(times[0].departure_time ?? times[0].arrival_time) ??
+    0;
 
   // 2. Bulk-fetch the stop records.
   const stopIds = Array.from(new Set(times.map((t) => t.stop_id)));
@@ -419,7 +431,8 @@ export async function fetchTripStops(tripId: string): Promise<RouteStopListItem[
     .in('stop_id', stopIds);
   if (stopsErr) throw stopsErr;
   const stopById = new Map<number, TransportStop>();
-  for (const s of (stops ?? []) as RawStop[]) stopById.set(s.stop_id, mapStop(s));
+  for (const s of (stops ?? []) as RawStop[])
+    stopById.set(s.stop_id, mapStop(s));
 
   const out: RouteStopListItem[] = [];
   for (const t of times) {
@@ -435,7 +448,9 @@ export async function fetchTripStops(tripId: string): Promise<RouteStopListItem[
   return out;
 }
 
-export async function fetchRoutesAtStop(stopId: string): Promise<TransportRoute[]> {
+export async function fetchRoutesAtStop(
+  stopId: string,
+): Promise<TransportRoute[]> {
   const idNum = Number.parseInt(stopId, 10);
   if (Number.isNaN(idNum)) return [];
 
@@ -527,7 +542,9 @@ export async function fetchNextArrivals(
     const slice = tripIds.slice(i, i + CHUNK);
     const { data: trips, error: tErr } = await supabase
       .from(TRIPS_TABLE)
-      .select('trip_id, route_id, direction_code, trip_headsign, trip_long_name')
+      .select(
+        'trip_id, route_id, direction_code, trip_headsign, trip_long_name',
+      )
       .in('trip_id', slice);
     if (tErr) throw tErr;
     for (const t of (trips ?? []) as RawTrip[]) tripById.set(t.trip_id, t);
@@ -660,7 +677,8 @@ export async function fetchStopDailyArrivals(
   minutes.sort((a, b) => a - b);
   // Dedupe exact duplicates (service calendars × same clock time).
   const deduped: number[] = [];
-  for (const m of minutes) if (deduped[deduped.length - 1] !== m) deduped.push(m);
+  for (const m of minutes)
+    if (deduped[deduped.length - 1] !== m) deduped.push(m);
   return deduped;
 }
 
@@ -915,7 +933,9 @@ export async function findDirectTransitRides(
       if (depMin == null) continue;
       for (const t of toRows) {
         if (t.stop_sequence <= f.stop_sequence) continue;
-        const arrMin = parseGtfsTimeToMinutes(t.arrival_time ?? t.departure_time);
+        const arrMin = parseGtfsTimeToMinutes(
+          t.arrival_time ?? t.departure_time,
+        );
         if (arrMin == null || arrMin <= depMin) continue;
         const normalized = depMin % 1440;
         const minutesUntil = (normalized - nowMin + 1440) % 1440;
@@ -944,7 +964,9 @@ export async function findDirectTransitRides(
     const slice = uniqueTripIds.slice(i, i + CHUNK);
     const { data: trips, error: tErr } = await supabase
       .from(TRIPS_TABLE)
-      .select('trip_id, route_id, direction_code, trip_headsign, trip_long_name')
+      .select(
+        'trip_id, route_id, direction_code, trip_headsign, trip_long_name',
+      )
       .in('trip_id', slice);
     if (tErr) throw tErr;
     for (const t of (trips ?? []) as RawTrip[]) tripById.set(t.trip_id, t);
@@ -982,7 +1004,8 @@ export async function findDirectTransitRides(
       .select('stop_id, stop_name, stop_lat, stop_lon, alias')
       .in('stop_id', slice);
     if (sErr) throw sErr;
-    for (const s of (stops ?? []) as RawStop[]) stopById.set(s.stop_id, mapStop(s));
+    for (const s of (stops ?? []) as RawStop[])
+      stopById.set(s.stop_id, mapStop(s));
   }
 
   // 7. Keep the N best rides, dedup by (route, direction, from_stop).
@@ -1034,7 +1057,10 @@ export async function findDirectTransitRides(
       .gt('stop_sequence', c.fromSeq)
       .lt('stop_sequence', c.toSeq)
       .order('stop_sequence');
-    const seqs = (seqRows ?? []) as { stop_id: number; stop_sequence: number }[];
+    const seqs = (seqRows ?? []) as {
+      stop_id: number;
+      stop_sequence: number;
+    }[];
     if (seqs.length === 0) continue;
     const ids = Array.from(new Set(seqs.map((s) => s.stop_id)));
     const { data: midStops } = await supabase
@@ -1042,7 +1068,10 @@ export async function findDirectTransitRides(
       .select('stop_id, stop_name')
       .in('stop_id', ids);
     const nameById = new Map<number, string>();
-    for (const s of (midStops ?? []) as { stop_id: number; stop_name: string }[]) {
+    for (const s of (midStops ?? []) as {
+      stop_id: number;
+      stop_name: string;
+    }[]) {
       nameById.set(s.stop_id, s.stop_name);
     }
     ride.intermediateStops = seqs
@@ -1052,4 +1081,3 @@ export async function findDirectTransitRides(
 
   return rides;
 }
-

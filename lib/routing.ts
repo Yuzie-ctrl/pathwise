@@ -178,6 +178,11 @@ export interface DrawnRouteOverride {
   distanceMeters: number;
   durationSeconds: number;
   partial?: boolean;
+  /** Individually road-snapped drawn strokes (the parts the user actually
+   *  traced). When present on a full override, fetchRoute renders these as
+   *  highlighted "drawn" sub-legs and the spans between them as normal
+   *  road-connector sub-legs so the drawn portion is visually distinct. */
+  snappedStrokes?: { latitude: number; longitude: number }[][];
   /** Chosen completion from the drawing end to the destination (overrides the
    *  default OSRM connector). Set when the user picks a U-turn vs forward
    *  alternative after a partial drawing. */
@@ -212,7 +217,56 @@ export async function fetchRoute(
 
     if (override && override.coordinates.length >= 2) {
       if (!override.partial) {
-        // Full leg replacement — snap endpoints to stops.
+        // Full leg replacement. When we have the individually-snapped drawn
+        // strokes, emit them as highlighted "drawn" sub-legs and route the
+        // spans between them along roads as normal connector sub-legs — so
+        // the hand-drawn portion is visually distinct from the parts where
+        // the user is just moving between drawn segments.
+        const strokes = (override.snappedStrokes ?? []).filter(
+          (s) => s.length >= 2,
+        );
+        if (strokes.length >= 2) {
+          for (let k = 0; k < strokes.length; k++) {
+            const stroke = strokes[k].slice();
+            // Snap the very first / very last point to the trip endpoints.
+            if (k === 0)
+              stroke[0] = { latitude: a.latitude, longitude: a.longitude };
+            if (k === strokes.length - 1)
+              stroke[stroke.length - 1] = {
+                latitude: b.latitude,
+                longitude: b.longitude,
+              };
+            const drawnDist = routeDistanceMeters({ coordinates: stroke });
+            legs.push({
+              distanceMeters: drawnDist,
+              durationSeconds: Math.round(drawnDist / speed),
+              coordinates: stroke,
+              segmentIndex: i,
+              mode,
+              drawn: true,
+            });
+            // Road connector to the next drawn stroke.
+            if (k < strokes.length - 1) {
+              const from = stroke[stroke.length - 1];
+              const to = strokes[k + 1][0];
+              if (haversine(from, to) > 8) {
+                const gap = await tryOsrmRoute(profile, from, to, signal);
+                if (gap.coordinates.length >= 2) {
+                  const gapDist = gap.distance ?? routeDistanceMeters(gap);
+                  legs.push({
+                    distanceMeters: gapDist,
+                    durationSeconds: Math.round(gapDist / speed),
+                    coordinates: gap.coordinates,
+                    segmentIndex: i,
+                    mode,
+                  });
+                }
+              }
+            }
+          }
+          continue;
+        }
+        // No per-stroke data — treat the whole snapped line as drawn.
         const coords = override.coordinates.slice();
         coords[0] = { latitude: a.latitude, longitude: a.longitude };
         coords[coords.length - 1] = {
@@ -301,7 +355,10 @@ export async function fetchRoute(
     }));
     if (coords.length > 0) {
       coords[0] = { latitude: a.latitude, longitude: a.longitude };
-      coords[coords.length - 1] = { latitude: b.latitude, longitude: b.longitude };
+      coords[coords.length - 1] = {
+        latitude: b.latitude,
+        longitude: b.longitude,
+      };
     }
 
     // Duration derived from actual distance × mode-specific speed — honest
@@ -462,10 +519,29 @@ export async function matchDrawnRoute(
   points: { latitude: number; longitude: number }[],
   mode: TransportMode,
   signal?: AbortSignal,
+  /** Map latitudeDelta at draw time. Larger = more zoomed out = bias toward
+   *  bigger roads (only dip into small streets when necessary). */
+  zoomDelta?: number,
 ): Promise<MatchedRoute> {
   if (points.length < 2) {
     return { coordinates: points, distanceMeters: 0, durationSeconds: 0 };
   }
+
+  // Zoom bias. latitudeDelta ≈ visible latitude span in degrees.
+  //   < 0.015  → very zoomed in  → allow small streets / alleys
+  //   0.015–0.05 → medium        → normal roads
+  //   0.05–0.15 → zoomed out      → prefer big roads
+  //   > 0.15   → very zoomed out  → highways / major roads only
+  const zoom: 'alley' | 'street' | 'road' | 'highway' =
+    zoomDelta == null
+      ? 'street'
+      : zoomDelta < 0.015
+        ? 'alley'
+        : zoomDelta < 0.05
+          ? 'street'
+          : zoomDelta < 0.15
+            ? 'road'
+            : 'highway';
 
   // 1) Drop near-duplicate samples (within 5 m). Noisy raw input causes
   //    OSRM /match to hop into side streets for one sample and back.
@@ -485,16 +561,32 @@ export async function matchDrawnRoute(
     totalLen += haversine(cleaned[i - 1], cleaned[i]);
   }
   if (totalLen < 10) {
-    return { coordinates: cleaned, distanceMeters: totalLen, durationSeconds: 0 };
+    return {
+      coordinates: cleaned,
+      distanceMeters: totalLen,
+      durationSeconds: 0,
+    };
   }
   const avgSpacing = totalLen / Math.max(1, cleaned.length - 1);
   // "Fine" = user zoomed in and traced a small street/path deliberately.
-  const fine = avgSpacing < 12;
+  // Only honour fine tracing when the map is actually zoomed in — at wide
+  // zoom the same finger movement covers big roads, so never treat it as fine.
+  const fine = avgSpacing < 12 && (zoom === 'alley' || zoom === 'street');
 
   // 2) Resample with a MINIMUM spacing — never place waypoints closer than
-  //    35 m (fine) or 80 m (coarse). Waypoints closer than that let OSRM
-  //    justify a brief detour that comes right back.
-  const minStep = fine ? 35 : 80;
+  //    this. Waypoints closer than that let OSRM justify a brief detour that
+  //    comes right back. Bigger step at wider zoom = fewer anchors = the
+  //    router is free to follow the big roads that are visible on the map.
+  const minStep =
+    zoom === 'alley'
+      ? 30
+      : zoom === 'street'
+        ? fine
+          ? 35
+          : 80
+        : zoom === 'road'
+          ? 160
+          : 300; // highway
   const targetCount = Math.max(
     2,
     Math.min(80, Math.round(totalLen / minStep) + 1),
@@ -507,11 +599,20 @@ export async function matchDrawnRoute(
   const profile = OSRM_PROFILES[mode];
 
   // --- Primary: OSRM /match ------------------------------------------------
-  // `radiuses` per-point controls how far OSRM may snap each sample. When the
-  // drawing is fine we keep radius moderate (30 m) to stay on the small road
-  // the user drew; coarse drawings get 60 m so major roads win. `tidy=true`
-  // lets OSRM drop obvious outliers — that's what prevents the short detours.
-  const matchRadius = fine ? 25 : 75;
+  // `radiuses` per-point controls how far OSRM may snap each sample. A larger
+  // radius at wider zoom lets OSRM snap each anchor to the nearest MAJOR road
+  // (small alleys get ignored unless they're the only way through); a tight
+  // radius when zoomed in keeps the line on the small road the user traced.
+  const matchRadius =
+    zoom === 'alley'
+      ? 20
+      : zoom === 'street'
+        ? fine
+          ? 25
+          : 75
+        : zoom === 'road'
+          ? 140
+          : 260; // highway
   try {
     const coordsStr = resampled
       .map((p) => `${p.longitude},${p.latitude}`)
@@ -584,7 +685,8 @@ export async function matchDrawnRoute(
           return {
             coordinates: finalCoords,
             distanceMeters: finalDist,
-            durationSeconds: dur || Math.round(finalDist / AVG_SPEED_MPS.driving),
+            durationSeconds:
+              dur || Math.round(finalDist / AVG_SPEED_MPS.driving),
           };
         }
       }
@@ -595,7 +697,9 @@ export async function matchDrawnRoute(
 
   // --- Fallback: /route that must visit each resampled waypoint ------------
   try {
-    const coords = resampled.map((p) => `${p.longitude},${p.latitude}`).join(';');
+    const coords = resampled
+      .map((p) => `${p.longitude},${p.latitude}`)
+      .join(';');
     const radii = resampled.map(() => matchRadius * 2).join(';');
     const url =
       `https://router.project-osrm.org/route/v1/${profile}/${coords}` +
@@ -737,7 +841,11 @@ export async function detectAmbiguousSpot(
   const maxLat = Math.max(...lats);
   const minLon = Math.min(...lons);
   const maxLon = Math.max(...lons);
-  const delta = Math.max(0.004, (maxLat - minLat) * 2.2, (maxLon - minLon) * 2.2);
+  const delta = Math.max(
+    0.004,
+    (maxLat - minLat) * 2.2,
+    (maxLon - minLon) * 2.2,
+  );
 
   return {
     center: {
@@ -783,7 +891,6 @@ function polylinesSimilar(
   return sum / a.length < thresholdMeters;
 }
 
-
 /**
  * Match a *set* of freehand strokes into one continuous road-network route.
  *
@@ -800,6 +907,7 @@ export async function matchDrawnStrokes(
   strokes: { latitude: number; longitude: number }[][],
   mode: TransportMode,
   signal?: AbortSignal,
+  zoomDelta?: number,
 ): Promise<MatchedRoute> {
   // Keep only strokes that actually have ≥ 2 points.
   const usable = strokes.filter((s) => s.length >= 2);
@@ -807,7 +915,7 @@ export async function matchDrawnStrokes(
     return { coordinates: [], distanceMeters: 0, durationSeconds: 0 };
   }
   if (usable.length === 1) {
-    return matchDrawnRoute(usable[0], mode, signal);
+    return matchDrawnRoute(usable[0], mode, signal, zoomDelta);
   }
 
   const profile = OSRM_PROFILES[mode];
@@ -816,14 +924,17 @@ export async function matchDrawnStrokes(
   // 1) Snap each stroke to roads independently.
   const matchedStrokes: MatchedRoute[] = [];
   for (const stroke of usable) {
-    const m = await matchDrawnRoute(stroke, mode, signal);
+    const m = await matchDrawnRoute(stroke, mode, signal, zoomDelta);
     if (m.coordinates.length >= 2) matchedStrokes.push(m);
   }
   if (matchedStrokes.length === 0) {
     return { coordinates: [], distanceMeters: 0, durationSeconds: 0 };
   }
   if (matchedStrokes.length === 1)
-    return { ...matchedStrokes[0], snappedStrokes: [matchedStrokes[0].coordinates] };
+    return {
+      ...matchedStrokes[0],
+      snappedStrokes: [matchedStrokes[0].coordinates],
+    };
 
   // 2) Stitch: stroke[0] → road-route gap → stroke[1] → road-route gap → …
   const stitched: MatchedPoint[] = [];
@@ -992,7 +1103,7 @@ function simplifyPolyline(
   epsilonMeters: number,
 ): { latitude: number; longitude: number }[] {
   if (coords.length <= 2) return coords.slice();
-  const keep = new Array(coords.length).fill(false);
+  const keep = Array.from({ length: coords.length }, () => false);
   keep[0] = true;
   keep[coords.length - 1] = true;
 
@@ -1050,7 +1161,8 @@ function routeDistanceMetersFlat(
   points: { latitude: number; longitude: number }[],
 ): number {
   let d = 0;
-  for (let i = 1; i < points.length; i++) d += haversine(points[i - 1], points[i]);
+  for (let i = 1; i < points.length; i++)
+    d += haversine(points[i - 1], points[i]);
   return d;
 }
 
@@ -1324,14 +1436,26 @@ export function buildTransitOptions(
       const lineForHop = v.lines[h % v.lines.length];
       const kindForHop = v.kinds[h % v.kinds.length] ?? 'bus';
       const busDist = hopDist * (1 - walkFracPerSide * (isFirstHop ? 2 : 1));
-      const busSec = Math.max(60, Math.round(hopDur - (isFirstHop ? 2 : 1) * (walkFracPerSide * hopDist) / AVG_SPEED_MPS.walking));
+      const busSec = Math.max(
+        60,
+        Math.round(
+          hopDur -
+            ((isFirstHop ? 2 : 1) * (walkFracPerSide * hopDist)) /
+              AVG_SPEED_MPS.walking,
+        ),
+      );
       const stopsCount = Math.max(2, Math.round((busDist / 1000) * 1.2));
       const intermediateStops: string[] = [];
       for (let s = 1; s < stopsCount; s++) {
         intermediateStops.push(`Остановка ${s}`);
       }
       segments.push({
-        kind: kindForHop === 'tram' ? 'tram' : kindForHop === 'train' ? 'train' : 'bus',
+        kind:
+          kindForHop === 'tram'
+            ? 'tram'
+            : kindForHop === 'train'
+              ? 'train'
+              : 'bus',
         durationSeconds: busSec,
         distanceMeters: busDist,
         line: lineForHop,
@@ -1369,7 +1493,10 @@ export function buildTransitOptions(
       }
     }
 
-    const realDur = segments.reduce((acc, s) => acc + (s.isDwell ? 0 : s.durationSeconds), 0);
+    const realDur = segments.reduce(
+      (acc, s) => acc + (s.isDwell ? 0 : s.durationSeconds),
+      0,
+    );
 
     return {
       id: v.id,
@@ -1392,9 +1519,20 @@ export function buildTransitOptions(
  */
 export function buildTransitOptionsFromGtfs(
   rides: {
-    route: { id: string; short_name: string; long_name: string; vehicle_kind: string; color: string | null };
+    route: {
+      id: string;
+      short_name: string;
+      long_name: string;
+      vehicle_kind: string;
+      color: string | null;
+    };
     trip: { id: string; direction: number; headsign: string };
-    fromStop: { id: string; name: string; latitude?: number; longitude?: number };
+    fromStop: {
+      id: string;
+      name: string;
+      latitude?: number;
+      longitude?: number;
+    };
     toStop: { id: string; name: string; latitude?: number; longitude?: number };
     departureMinute: number;
     arrivalMinute: number;
@@ -1460,7 +1598,10 @@ export function buildTransitOptionsFromGtfs(
       intermediateStops: ride.intermediateStops,
       fromCoord:
         ride.fromStop.latitude != null && ride.fromStop.longitude != null
-          ? { latitude: ride.fromStop.latitude, longitude: ride.fromStop.longitude }
+          ? {
+              latitude: ride.fromStop.latitude,
+              longitude: ride.fromStop.longitude,
+            }
           : undefined,
       toCoord:
         ride.toStop.latitude != null && ride.toStop.longitude != null
@@ -1490,22 +1631,19 @@ export function buildTransitOptionsFromGtfs(
     });
 
     const vehicleKinds: TransitOption['vehicleKinds'] = [
-      (ride.route.vehicle_kind === 'tram'
+      ride.route.vehicle_kind === 'tram'
         ? 'tram'
         : ride.route.vehicle_kind === 'trolley'
           ? 'trolley'
           : ride.route.vehicle_kind === 'train'
             ? 'train'
-            : 'bus'),
+            : 'bus',
     ];
 
     return {
       id: `gtfs-${ride.route.id}-${ride.trip.id}-${idx}`,
       label: `${ride.route.short_name} · ${ride.trip.headsign || destinationLabel}`,
-      description:
-        idx === 0
-          ? 'Прямой рейс'
-          : `Альтернативный рейс ${idx + 1}`,
+      description: idx === 0 ? 'Прямой рейс' : `Альтернативный рейс ${idx + 1}`,
       durationSeconds: totalSec,
       walkMinutes,
       transfers: 0,
@@ -1530,8 +1668,16 @@ export function buildTransitOptionsFromGtfs(
  * Returns null when the two are effectively identical (no real choice).
  */
 export interface PostConnectorVariants {
-  uturn: { coordinates: MatchedPoint[]; distanceMeters: number; durationSeconds: number };
-  forward: { coordinates: MatchedPoint[]; distanceMeters: number; durationSeconds: number };
+  uturn: {
+    coordinates: MatchedPoint[];
+    distanceMeters: number;
+    durationSeconds: number;
+  };
+  forward: {
+    coordinates: MatchedPoint[];
+    distanceMeters: number;
+    durationSeconds: number;
+  };
 }
 
 export async function computePostConnectorVariants(
@@ -1553,7 +1699,10 @@ export async function computePostConnectorVariants(
       if (!res.ok) return null;
       const data = (await res.json()) as {
         code: string;
-        routes?: { distance: number; geometry: { coordinates: [number, number][] } }[];
+        routes?: {
+          distance: number;
+          geometry: { coordinates: [number, number][] };
+        }[];
       };
       if (data.code !== 'Ok' || !data.routes?.length) return null;
       const r = data.routes[0];
@@ -1649,9 +1798,11 @@ export async function buildTransitLegsFromStops(
     });
   }
 
-  const busDist = busGeom.distance ?? routeDistanceMetersFlat(busGeom.coordinates);
+  const busDist =
+    busGeom.distance ?? routeDistanceMetersFlat(busGeom.coordinates);
   legs.push({
-    coordinates: busGeom.coordinates.length >= 2 ? busGeom.coordinates : [board, alight],
+    coordinates:
+      busGeom.coordinates.length >= 2 ? busGeom.coordinates : [board, alight],
     distanceMeters: busDist,
     durationSeconds: Math.round(busDist / AVG_SPEED_MPS.transit),
     segmentIndex: 0,

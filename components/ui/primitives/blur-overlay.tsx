@@ -1,10 +1,7 @@
 import React from 'react';
 import { Pressable, StyleSheet } from 'react-native';
 import { BlurView } from 'expo-blur';
-import Animated, {
-  FadeIn,
-  FadeOut,
-} from 'react-native-reanimated';
+import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 
 import { cn } from '@/lib/utils';
 

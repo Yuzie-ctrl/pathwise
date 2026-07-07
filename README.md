@@ -138,6 +138,7 @@ Connect any MCP-compatible AI agent (Claude Desktop, OpenClaw, etc.) to programm
 ```
 
 Read more:
+
 - [Bilt MCP Documentation](https://bilt.me/docs)
 - [MCP Registry](https://registry.modelcontextprotocol.io/v0.1/servers/io.github.buildingapplications%2Fmcp/versions/latest)
 

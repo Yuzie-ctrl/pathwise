@@ -20,13 +20,7 @@ import Animated, {
   useSharedValue,
   withTiming,
 } from 'react-native-reanimated';
-import {
-  Locate,
-  MapPin,
-  Navigation2,
-  Store,
-  X,
-} from 'lucide-react-native';
+import { Locate, MapPin, Navigation2, Store, X } from 'lucide-react-native';
 
 import { Text } from '@/components/ui/text';
 import type { Mall } from '@/lib/malls';
@@ -43,26 +37,21 @@ export function MallSheet({ mall, onClose }: MallSheetProps) {
   const [landmarkChips, setLandmarkChips] = useState<string[]>([]);
   const [landmarkInput, setLandmarkInput] = useState('');
   const [destinationInput, setDestinationInput] = useState('');
-  const [confirmedDestination, setConfirmedDestination] = useState<string | null>(
-    null,
-  );
+  const [confirmedDestination, setConfirmedDestination] = useState<
+    string | null
+  >(null);
   const [step, setStep] = useState<StepId>('locate');
 
   // Autocomplete suggestions filtered by current input — LIMITED to the
   // stores that are actually tenants of this mall. Falls back gracefully
   // for malls without a curated tenant list.
-  const storePool = useMemo(
-    () => mall?.stores ?? [],
-    [mall?.stores],
-  );
+  const storePool = useMemo(() => mall?.stores ?? [], [mall?.stores]);
 
   const landmarkSuggestions = useMemo(() => {
     const q = landmarkInput.trim().toLowerCase();
     if (q.length === 0) return [];
     return storePool
-      .filter(
-        (s) => s.toLowerCase().includes(q) && !landmarkChips.includes(s),
-      )
+      .filter((s) => s.toLowerCase().includes(q) && !landmarkChips.includes(s))
       .slice(0, 6);
   }, [landmarkInput, landmarkChips, storePool]);
 
@@ -199,7 +188,9 @@ export function MallSheet({ mall, onClose }: MallSheetProps) {
                         }
                         destinationPosition={
                           confirmedDestination
-                            ? hashToRatio(`${mall.id}-dest-${confirmedDestination}`)
+                            ? hashToRatio(
+                                `${mall.id}-dest-${confirmedDestination}`,
+                              )
                             : null
                         }
                       />

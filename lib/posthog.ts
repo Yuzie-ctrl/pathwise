@@ -1,6 +1,6 @@
 import posthog from 'posthog-js';
 
-/* 
+/*
  * Initialize PostHog for the web template.
  * This is used to track events and sessions for the web template.
  * Do not modify this function as an agent.
@@ -13,7 +13,7 @@ export function initPostHog(): void {
   const key = params.get('__ph_key');
   const host = params.get('__ph_host');
   if (!key || !host) return;
-  
+
   posthog.init(key, {
     api_host: host,
     autocapture: false,

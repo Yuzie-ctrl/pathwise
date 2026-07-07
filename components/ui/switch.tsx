@@ -37,8 +37,14 @@ export interface SwitchProps extends VariantProps<typeof switchVariants> {
   className?: string;
 }
 
-export const Switch = React.forwardRef<React.ComponentRef<typeof Pressable>, SwitchProps>(
-  ({ checked, onCheckedChange, disabled, size = 'default', className }, ref) => {
+export const Switch = React.forwardRef<
+  React.ComponentRef<typeof Pressable>,
+  SwitchProps
+>(
+  (
+    { checked, onCheckedChange, disabled, size = 'default', className },
+    ref,
+  ) => {
     const progress = useDerivedValue(
       () => withSpring(checked ? 1 : 0, SPRING_CONFIGS.snappy),
       [checked],

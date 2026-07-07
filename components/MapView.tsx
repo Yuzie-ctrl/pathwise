@@ -244,7 +244,11 @@ export default function MapView({
         onLongPress({
           coordinate: { latitude: data.lat, longitude: data.lng },
         });
-      } else if (data.type === 'markerPress' && onMarkerPress && markers[data.index]) {
+      } else if (
+        data.type === 'markerPress' &&
+        onMarkerPress &&
+        markers[data.index]
+      ) {
         onMarkerPress(markers[data.index]);
       } else if (data.type === 'dragEnd' && markers[data.index]?.onDragEnd) {
         markers[data.index].onDragEnd!({
@@ -260,7 +264,10 @@ export default function MapView({
   const polylineSig = useMemo(
     () =>
       polylines
-        .map((p) => `${p.strokeColor ?? ''}|${p.lineDashPattern?.join(',') ?? ''}|${p.coordinates.length}`)
+        .map(
+          (p) =>
+            `${p.strokeColor ?? ''}|${p.lineDashPattern?.join(',') ?? ''}|${p.coordinates.length}`,
+        )
         .join(';'),
     [polylines],
   );
@@ -344,14 +351,20 @@ export default function MapView({
         onRegionChangeComplete={onRegionChangeComplete}
         onPress={
           onPress
-            ? (e: { nativeEvent: { coordinate: { latitude: number; longitude: number } } }) =>
-                onPress({ coordinate: e.nativeEvent.coordinate })
+            ? (e: {
+                nativeEvent: {
+                  coordinate: { latitude: number; longitude: number };
+                };
+              }) => onPress({ coordinate: e.nativeEvent.coordinate })
             : undefined
         }
         onLongPress={
           onLongPress
-            ? (e: { nativeEvent: { coordinate: { latitude: number; longitude: number } } }) =>
-                onLongPress({ coordinate: e.nativeEvent.coordinate })
+            ? (e: {
+                nativeEvent: {
+                  coordinate: { latitude: number; longitude: number };
+                };
+              }) => onLongPress({ coordinate: e.nativeEvent.coordinate })
             : undefined
         }
       >
@@ -366,13 +379,14 @@ export default function MapView({
             opacity={marker.opacity}
             onDragEnd={
               marker.onDragEnd
-                ? (e: { nativeEvent: { coordinate: { latitude: number; longitude: number } } }) =>
-                    marker.onDragEnd!(e.nativeEvent.coordinate)
+                ? (e: {
+                    nativeEvent: {
+                      coordinate: { latitude: number; longitude: number };
+                    };
+                  }) => marker.onDragEnd!(e.nativeEvent.coordinate)
                 : undefined
             }
-            onPress={
-              onMarkerPress ? () => onMarkerPress(marker) : undefined
-            }
+            onPress={onMarkerPress ? () => onMarkerPress(marker) : undefined}
           >
             {marker.badgeText ? (
               <View
@@ -392,7 +406,9 @@ export default function MapView({
                   elevation: 3,
                 }}
               >
-                <Text style={{ color: '#fff', fontWeight: '700', fontSize: 13 }}>
+                <Text
+                  style={{ color: '#fff', fontWeight: '700', fontSize: 13 }}
+                >
                   {marker.badgeText}
                 </Text>
               </View>

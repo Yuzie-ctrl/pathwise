@@ -226,7 +226,9 @@ export function TransportScheduleSheet({ visible, onClose }: Props) {
               onPickRoute={(r) =>
                 setView({ kind: 'routeDirections', routeId: r.id })
               }
-              onPickStop={(s) => setView({ kind: 'stopArrivals', stopId: s.id })}
+              onPickStop={(s) =>
+                setView({ kind: 'stopArrivals', stopId: s.id })
+              }
               onPickFavorite={(fav) =>
                 setView({
                   kind: 'stopDetail',
@@ -269,9 +271,7 @@ export function TransportScheduleSheet({ visible, onClose }: Props) {
               showMap={view.showMap}
               alwaysShowLabels={view.alwaysShowLabels}
               highlightStopId={view.highlightStopId}
-              onToggleMap={() =>
-                setView({ ...view, showMap: !view.showMap })
-              }
+              onToggleMap={() => setView({ ...view, showMap: !view.showMap })}
               onToggleLabels={() =>
                 setView({ ...view, alwaysShowLabels: !view.alwaysShowLabels })
               }
@@ -327,8 +327,7 @@ export function TransportScheduleSheet({ visible, onClose }: Props) {
               onShiftTime={(delta) =>
                 setView({
                   ...view,
-                  selectedDepartureMinute:
-                    view.selectedDepartureMinute + delta,
+                  selectedDepartureMinute: view.selectedDepartureMinute + delta,
                 })
               }
             />
@@ -363,7 +362,9 @@ function HomeView({
 }) {
   const [q, setQ] = useState('');
   const [stopSuggestions, setStopSuggestions] = useState<TransportStop[]>([]);
-  const [routeSuggestions, setRouteSuggestions] = useState<TransportRoute[]>([]);
+  const [routeSuggestions, setRouteSuggestions] = useState<TransportRoute[]>(
+    [],
+  );
   const [loading, setLoading] = useState(false);
   const favorites = useTransportFavorites((s) => s.favorites);
   const removeFav = useTransportFavorites((s) => s.removeFavorite);
@@ -648,7 +649,9 @@ function AllRoutesView({ onPick }: { onPick: (r: TransportRoute) => void }) {
 
   const filtered = useMemo(() => {
     if (!routes) return [];
-    const list = routes.filter((r) => (r.authority_raw ?? 'Прочее') === authority);
+    const list = routes.filter(
+      (r) => (r.authority_raw ?? 'Прочее') === authority,
+    );
     if (kind === 'all') return list;
     return list.filter((r) => r.vehicle_kind === kind);
   }, [routes, authority, kind]);
@@ -680,7 +683,11 @@ function AllRoutesView({ onPick }: { onPick: (r: TransportRoute) => void }) {
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
-        contentContainerStyle={{ paddingHorizontal: 12, paddingVertical: 10, gap: 8 }}
+        contentContainerStyle={{
+          paddingHorizontal: 12,
+          paddingVertical: 10,
+          gap: 8,
+        }}
         className="border-b border-border"
       >
         {authoritiesOrdered.map((a) => {
@@ -706,12 +713,14 @@ function AllRoutesView({ onPick }: { onPick: (r: TransportRoute) => void }) {
 
       {/* Vehicle-kind sub-tabs — only show options actually present */}
       <View className="flex-row border-b border-border">
-        {([
-          { k: 'all' as const, l: 'Все' },
-          { k: 'bus' as const, l: 'Автобус' },
-          { k: 'tram' as const, l: 'Трамвай' },
-          { k: 'night_bus' as const, l: 'Ночной' },
-        ] as const)
+        {(
+          [
+            { k: 'all' as const, l: 'Все' },
+            { k: 'bus' as const, l: 'Автобус' },
+            { k: 'tram' as const, l: 'Трамвай' },
+            { k: 'night_bus' as const, l: 'Ночной' },
+          ] as const
+        )
           .filter((o) => o.k === 'all' || availableKinds.has(o.k))
           .map((o) => {
             const active = kind === o.k;
@@ -734,7 +743,13 @@ function AllRoutesView({ onPick }: { onPick: (r: TransportRoute) => void }) {
       <View className="px-4 py-2">
         <Text className="text-xs text-muted-foreground">
           {filtered.length} маршрут
-          {filtered.length % 10 === 1 && filtered.length % 100 !== 11 ? '' : filtered.length % 10 >= 2 && filtered.length % 10 <= 4 && (filtered.length % 100 < 10 || filtered.length % 100 >= 20) ? 'а' : 'ов'}
+          {filtered.length % 10 === 1 && filtered.length % 100 !== 11
+            ? ''
+            : filtered.length % 10 >= 2 &&
+                filtered.length % 10 <= 4 &&
+                (filtered.length % 100 < 10 || filtered.length % 100 >= 20)
+              ? 'а'
+              : 'ов'}
         </Text>
       </View>
 
@@ -874,8 +889,9 @@ function RouteStopsView({
   const [trip, setTrip] = useState<TransportTrip | null>(null);
   const [stops, setStops] = useState<RouteStopListItem[]>([]);
   const [stopsLoading, setStopsLoading] = useState(true);
-  const [mapStopArrivals, setMapStopArrivals] =
-    useState<NextArrival[] | null>(null);
+  const [mapStopArrivals, setMapStopArrivals] = useState<NextArrival[] | null>(
+    null,
+  );
   const [mapSelectedStop, setMapSelectedStop] = useState<TransportStop | null>(
     null,
   );
@@ -901,24 +917,21 @@ function RouteStopsView({
       .finally(() => setStopsLoading(false));
   }, [routeId, tripId]);
 
-  const handleStopMarkerPress = useCallback(
-    async (stop: TransportStop) => {
-      setMapSelectedStop(stop);
-      setMapStopArrivals(null);
-      setMapStopRoutes([]);
-      try {
-        const [arrivals, routes] = await Promise.all([
-          fetchNextArrivals(stop.id, new Date(), 6),
-          fetchRoutesAtStop(stop.id),
-        ]);
-        setMapStopArrivals(arrivals);
-        setMapStopRoutes(routes);
-      } catch {
-        setMapStopArrivals([]);
-      }
-    },
-    [],
-  );
+  const handleStopMarkerPress = useCallback(async (stop: TransportStop) => {
+    setMapSelectedStop(stop);
+    setMapStopArrivals(null);
+    setMapStopRoutes([]);
+    try {
+      const [arrivals, routes] = await Promise.all([
+        fetchNextArrivals(stop.id, new Date(), 6),
+        fetchRoutesAtStop(stop.id),
+      ]);
+      setMapStopArrivals(arrivals);
+      setMapStopRoutes(routes);
+    } catch {
+      setMapStopArrivals([]);
+    }
+  }, []);
 
   const mapRegion = useMemo<MapRegion>(() => {
     if (stops.length === 0) {
@@ -951,8 +964,7 @@ function RouteStopsView({
     () =>
       stops.map((s) => {
         const isHighlighted =
-          highlightStopId === s.stop.id ||
-          mapSelectedStop?.id === s.stop.id;
+          highlightStopId === s.stop.id || mapSelectedStop?.id === s.stop.id;
         const showLabel = alwaysShowLabels || isHighlighted;
         const dotColor = isHighlighted ? '#ef4444' : color;
         const html = showLabel
@@ -1043,10 +1055,7 @@ function RouteStopsView({
           hitSlop={6}
           className={`items-center justify-center rounded-lg border px-2 py-1.5 ${showMap ? 'border-primary bg-primary' : 'border-border bg-card'}`}
         >
-          <MapPin
-            size={14}
-            color={showMap ? '#fff' : '#2563eb'}
-          />
+          <MapPin size={14} color={showMap ? '#fff' : '#2563eb'} />
         </Pressable>
       </View>
 
@@ -1113,7 +1122,9 @@ function RouteStopsView({
               {mapStopArrivals == null ? (
                 <ActivityIndicator />
               ) : mapStopArrivals.length === 0 ? (
-                <Text className="text-xs text-muted-foreground">Нет данных</Text>
+                <Text className="text-xs text-muted-foreground">
+                  Нет данных
+                </Text>
               ) : (
                 <View className="mt-1 flex-row flex-wrap gap-2">
                   {mapStopArrivals.map((a) => (
@@ -1123,7 +1134,9 @@ function RouteStopsView({
                     >
                       <RouteBadge route={a.route} size="sm" />
                       <Text className="text-xs font-semibold text-foreground">
-                        {a.minutesUntil <= 0 ? 'сейчас' : `${a.minutesUntil} мин`}
+                        {a.minutesUntil <= 0
+                          ? 'сейчас'
+                          : `${a.minutesUntil} мин`}
                       </Text>
                     </View>
                   ))}
@@ -1262,10 +1275,7 @@ function StopDetailView({
         <View className="flex-row items-center gap-3 border-b border-border bg-muted/30 px-4 py-2.5">
           <RouteBadge route={route} />
           <View className="flex-1">
-            <Text
-              className="text-xs text-muted-foreground"
-              numberOfLines={1}
-            >
+            <Text className="text-xs text-muted-foreground" numberOfLines={1}>
               {route.long_name}
             </Text>
             <Text
@@ -1462,7 +1472,10 @@ function StopScheduleView({
           <Text className="text-xs text-muted-foreground" numberOfLines={1}>
             {route.long_name}
           </Text>
-          <Text className="text-base font-bold text-foreground" numberOfLines={1}>
+          <Text
+            className="text-base font-bold text-foreground"
+            numberOfLines={1}
+          >
             {selectedStop.stop.name}
           </Text>
         </View>

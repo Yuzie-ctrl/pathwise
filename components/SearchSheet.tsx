@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, TextInput, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Pressable,
+  ScrollView,
+  TextInput,
+  View,
+} from 'react-native';
 import { Brush, Clock, Locate, MapPin, Search, X } from 'lucide-react-native';
 
 import { Text } from '@/components/ui/text';
@@ -83,12 +89,7 @@ export function SearchSheet({
     if (query.trim().length === 0 && history.length === 0)
       return 'Начните вводить название места';
     if (query.trim().length === 1) return 'Введите хотя бы 2 символа';
-    if (
-      query.trim().length >= 2 &&
-      !loading &&
-      results.length === 0 &&
-      !error
-    )
+    if (query.trim().length >= 2 && !loading && results.length === 0 && !error)
       return 'Ничего не найдено';
     return null;
   }, [query, loading, results.length, error, history.length]);
@@ -197,7 +198,9 @@ export function SearchSheet({
                 h.displayName && h.displayName !== h.label
                   ? // strip leading duplicate of short label if present
                     h.displayName.replace(
-                      new RegExp(`^${h.label.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')},?\\s*`),
+                      new RegExp(
+                        `^${h.label.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')},?\\s*`,
+                      ),
                       '',
                     )
                   : null;
@@ -248,7 +251,9 @@ export function SearchSheet({
           const detail =
             r.displayName && r.displayName !== r.shortName
               ? r.displayName.replace(
-                  new RegExp(`^${r.shortName.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')},?\\s*`),
+                  new RegExp(
+                    `^${r.shortName.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')},?\\s*`,
+                  ),
                   '',
                 )
               : null;

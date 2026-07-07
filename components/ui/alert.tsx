@@ -9,32 +9,34 @@ import { Text } from './text';
 
 cssInterop(Animated.View, { className: 'style' });
 
-const alertVariants = cva(
-  'w-full rounded-lg border p-4',
-  {
-    variants: {
-      variant: {
-        default: 'border-border bg-background',
-        destructive: 'border-destructive/50 bg-destructive/10',
-        success: 'border-emerald-500/50 bg-emerald-500/10',
-        warning: 'border-amber-500/50 bg-amber-500/10',
-      },
-    },
-    defaultVariants: {
-      variant: 'default',
+const alertVariants = cva('w-full rounded-lg border p-4', {
+  variants: {
+    variant: {
+      default: 'border-border bg-background',
+      destructive: 'border-destructive/50 bg-destructive/10',
+      success: 'border-emerald-500/50 bg-emerald-500/10',
+      warning: 'border-amber-500/50 bg-amber-500/10',
     },
   },
-);
+  defaultVariants: {
+    variant: 'default',
+  },
+});
 
 export interface AlertProps
-  extends ViewProps,
-    VariantProps<typeof alertVariants> {
+  extends ViewProps, VariantProps<typeof alertVariants> {
   className?: string;
   icon?: React.ReactNode;
   children: React.ReactNode;
 }
 
-export function Alert({ variant, className, icon, children, ...props }: AlertProps) {
+export function Alert({
+  variant,
+  className,
+  icon,
+  children,
+  ...props
+}: AlertProps) {
   return (
     <Animated.View
       entering={SlideInLeft.springify().damping(15)}
@@ -68,7 +70,10 @@ export interface AlertDescriptionProps {
   children: React.ReactNode;
 }
 
-export function AlertDescription({ className, children }: AlertDescriptionProps) {
+export function AlertDescription({
+  className,
+  children,
+}: AlertDescriptionProps) {
   return (
     <Text size="sm" variant="muted" className={className}>
       {children}

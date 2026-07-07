@@ -171,10 +171,12 @@ export function DrawCanvas({
     const onPointerMove = (ev: PointerEvent) => {
       if (drawingPointerId.current !== ev.pointerId) return;
       const p = getLocal(ev);
-      const last = currentStrokeRef.current[currentStrokeRef.current.length - 1];
+      const last =
+        currentStrokeRef.current[currentStrokeRef.current.length - 1];
       if (last && Math.hypot(p.x - last.x, p.y - last.y) < 2) return;
       currentStrokeRef.current.push(p);
-      if (modeRef.current === 'erase') setLassoPx([...currentStrokeRef.current]);
+      if (modeRef.current === 'erase')
+        setLassoPx([...currentStrokeRef.current]);
       else setCurrentStrokePx([...currentStrokeRef.current]);
       ev.preventDefault();
       ev.stopPropagation();
@@ -307,7 +309,10 @@ export function DrawCanvas({
     return strokes.map((stroke) => {
       const pts = stroke.map((pt) => latLngToPx(pt.latitude, pt.longitude));
       const d = pts
-        .map((p, idx) => `${idx === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`)
+        .map(
+          (p, idx) =>
+            `${idx === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`,
+        )
         .join(' ');
       const mid = pts[Math.floor(pts.length / 2)] ?? { x: 0, y: 0 };
       return { d, label: mid };
@@ -317,7 +322,10 @@ export function DrawCanvas({
   const currentSvgPath = useMemo(() => {
     if (currentStrokePx.length === 0) return '';
     return currentStrokePx
-      .map((pt, idx) => `${idx === 0 ? 'M' : 'L'}${pt.x.toFixed(1)},${pt.y.toFixed(1)}`)
+      .map(
+        (pt, idx) =>
+          `${idx === 0 ? 'M' : 'L'}${pt.x.toFixed(1)},${pt.y.toFixed(1)}`,
+      )
       .join(' ');
   }, [currentStrokePx]);
 
@@ -325,7 +333,10 @@ export function DrawCanvas({
     if (lassoPx.length < 2) return '';
     return (
       lassoPx
-        .map((pt, idx) => `${idx === 0 ? 'M' : 'L'}${pt.x.toFixed(1)},${pt.y.toFixed(1)}`)
+        .map(
+          (pt, idx) =>
+            `${idx === 0 ? 'M' : 'L'}${pt.x.toFixed(1)},${pt.y.toFixed(1)}`,
+        )
         .join(' ') + ' Z'
     );
   }, [lassoPx]);
@@ -344,7 +355,9 @@ export function DrawCanvas({
           right: 0,
           bottom: 0,
           backgroundColor:
-            mode === 'erase' ? 'rgba(220,38,38,0.04)' : 'rgba(37, 99, 235, 0.03)',
+            mode === 'erase'
+              ? 'rgba(220,38,38,0.04)'
+              : 'rgba(37, 99, 235, 0.03)',
         }}
       />
 
@@ -442,7 +455,13 @@ export function DrawCanvas({
 
       <View
         pointerEvents="box-none"
-        style={{ position: 'absolute', top: 16, left: 16, right: 16, zIndex: 10 }}
+        style={{
+          position: 'absolute',
+          top: 16,
+          left: 16,
+          right: 16,
+          zIndex: 10,
+        }}
       >
         <View
           className="flex-row items-center gap-2 rounded-2xl bg-card px-4 py-3"
@@ -454,7 +473,10 @@ export function DrawCanvas({
             elevation: 6,
           }}
         >
-          <Sparkles size={16} color={mode === 'erase' ? '#dc2626' : '#2563eb'} />
+          <Sparkles
+            size={16}
+            color={mode === 'erase' ? '#dc2626' : '#2563eb'}
+          />
           <Text className="flex-1 text-sm text-foreground">
             {mode === 'erase'
               ? 'Обведите участок — линии внутри удалятся, остальные останутся'
@@ -504,19 +526,32 @@ export function DrawCanvas({
           ) : (
             <>
               <Eraser size={18} color="#444" />
-              <Text className="text-sm font-medium text-foreground">Стереть</Text>
+              <Text className="text-sm font-medium text-foreground">
+                Стереть
+              </Text>
             </>
           )}
         </Pressable>
         <Pressable
           onPress={handleConfirm}
-          disabled={(!hasDrawn && !(seededRef.current && !!onClearAll)) || processing}
+          disabled={
+            (!hasDrawn && !(seededRef.current && !!onClearAll)) || processing
+          }
           className={`flex-1 flex-row items-center justify-center gap-2 rounded-2xl py-3 ${
-            (hasDrawn || (seededRef.current && !!onClearAll)) && !processing ? 'bg-primary' : 'bg-muted'
+            (hasDrawn || (seededRef.current && !!onClearAll)) && !processing
+              ? 'bg-primary'
+              : 'bg-muted'
           }`}
           style={btnShadow}
         >
-          <Check size={18} color={(hasDrawn || (seededRef.current && !!onClearAll)) && !processing ? '#fff' : '#999'} />
+          <Check
+            size={18}
+            color={
+              (hasDrawn || (seededRef.current && !!onClearAll)) && !processing
+                ? '#fff'
+                : '#999'
+            }
+          />
           <Text
             className={`text-base font-semibold ${
               (hasDrawn || (seededRef.current && !!onClearAll)) && !processing

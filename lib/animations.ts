@@ -1,6 +1,9 @@
 import { ImpactFeedbackStyle, impactAsync } from 'expo-haptics';
 import { Platform } from 'react-native';
-import type { WithSpringConfig, WithTimingConfig } from 'react-native-reanimated';
+import type {
+  WithSpringConfig,
+  WithTimingConfig,
+} from 'react-native-reanimated';
 
 export const SPRING_CONFIGS = {
   gentle: { damping: 20, stiffness: 120, mass: 1 } satisfies WithSpringConfig,

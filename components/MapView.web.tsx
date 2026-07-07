@@ -74,7 +74,9 @@ function latLngToPixel(
     const x = ((ln + 180) / 360) * tileSize * scale;
     const sin = Math.sin((la * Math.PI) / 180);
     const y =
-      (0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI)) * tileSize * scale;
+      (0.5 - Math.log((1 + sin) / (1 - sin)) / (4 * Math.PI)) *
+      tileSize *
+      scale;
     return [x, y];
   };
   const [cx, cy] = project(center[0], center[1]);
@@ -111,8 +113,7 @@ export default function MapView({
     height: 0,
   });
   const [currentZoom, setCurrentZoom] = useState(zoom);
-  const [currentCenter, setCurrentCenter] =
-    useState<[number, number]>(center);
+  const [currentCenter, setCurrentCenter] = useState<[number, number]>(center);
   const lastExternalRegion = useRef<MapRegion>(activeRegion);
 
   // Sync controlled region → internal state
@@ -230,9 +231,7 @@ export default function MapView({
               key={marker.id ?? index}
               anchor={[marker.coordinate.latitude, marker.coordinate.longitude]}
               color={`hsl(${COLOR_HUE[marker.color ?? 'red'] ?? 0}, 80%, 50%)`}
-              onClick={
-                onMarkerPress ? () => onMarkerPress(marker) : undefined
-              }
+              onClick={onMarkerPress ? () => onMarkerPress(marker) : undefined}
             />
           ))}
       </Map>

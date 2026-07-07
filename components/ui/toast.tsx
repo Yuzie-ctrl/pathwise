@@ -12,10 +12,7 @@ import Animated, {
   SlideOutUp,
   Layout,
 } from 'react-native-reanimated';
-import {
-  Gesture,
-  GestureDetector,
-} from 'react-native-gesture-handler';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { cssInterop } from 'react-native-css-interop';
 import { cva } from 'class-variance-authority';
 
@@ -162,11 +159,13 @@ function ToastItem({ data, onDismiss }: ToastItemProps) {
     };
   }, [data.id, data.duration, onDismiss]);
 
-  const swipeGesture = Gesture.Pan().runOnJS(true).onEnd((e) => {
-    if (Math.abs(e.translationX) > threshold) {
-      onDismiss(data.id);
-    }
-  });
+  const swipeGesture = Gesture.Pan()
+    .runOnJS(true)
+    .onEnd((e) => {
+      if (Math.abs(e.translationX) > threshold) {
+        onDismiss(data.id);
+      }
+    });
 
   const textColor = toastTextVariants({ variant: data.variant });
 

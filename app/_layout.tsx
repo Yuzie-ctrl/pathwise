@@ -71,7 +71,7 @@ export default function RootLayout() {
         if (colorTheme !== colorScheme) {
           setColorScheme(colorTheme);
         }
-      } catch (_error) {
+      } catch {
         // no-op on storage errors
       }
     })();
@@ -95,7 +95,9 @@ export default function RootLayout() {
     const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
       const err = event.reason;
       const message =
-        err instanceof Error ? [err.message, err.stack].filter(Boolean).join('\n') : String(err);
+        err instanceof Error
+          ? [err.message, err.stack].filter(Boolean).join('\n')
+          : String(err);
       reportErrorToParent(message);
     };
 
@@ -103,7 +105,10 @@ export default function RootLayout() {
     window.addEventListener('unhandledrejection', handleUnhandledRejection);
     return () => {
       window.removeEventListener('error', handleError);
-      window.removeEventListener('unhandledrejection', handleUnhandledRejection);
+      window.removeEventListener(
+        'unhandledrejection',
+        handleUnhandledRejection,
+      );
     };
   }, []);
 
@@ -134,7 +139,8 @@ export default function RootLayout() {
   }, []);
 
   useEffect(() => {
-    const isExpoGo = Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
+    const isExpoGo =
+      Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
     if (__DEV__ && Platform.OS !== 'web' && !isExpoGo) {
       const timer = setTimeout(() => {
         DevClient.closeMenu();

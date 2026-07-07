@@ -39,7 +39,12 @@ export function DwellPicker({
   };
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={onClose}
+    >
       <Pressable
         onPress={onClose}
         className="flex-1 items-center justify-center bg-black/50 px-6"

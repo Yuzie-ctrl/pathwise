@@ -132,9 +132,7 @@ function WheelColumn({
   }, []);
 
   return (
-    <View
-      style={{ height: LIST_HEIGHT, width: 80, overflow: 'hidden' }}
-    >
+    <View style={{ height: LIST_HEIGHT, width: 80, overflow: 'hidden' }}>
       <View
         pointerEvents="none"
         style={{
@@ -299,7 +297,11 @@ export function TimePickerModal({
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 8, gap: 8 }}
+            contentContainerStyle={{
+              paddingHorizontal: 16,
+              paddingVertical: 8,
+              gap: 8,
+            }}
           >
             {DAY_OPTIONS.map((d) => {
               const now = new Date();
@@ -318,7 +320,9 @@ export function TimePickerModal({
                     onChange(next);
                   }}
                   className={`rounded-xl border px-4 py-2 ${
-                    active ? 'border-primary bg-primary' : 'border-border bg-muted'
+                    active
+                      ? 'border-primary bg-primary'
+                      : 'border-border bg-muted'
                   }`}
                 >
                   <Text

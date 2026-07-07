@@ -86,8 +86,8 @@ export function AmbiguityPrompt({
           </Pressable>
         </View>
         <Text className="mt-2 text-center text-xs text-muted-foreground">
-          {variantCount} {variantCount === 2 ? 'варианта' : 'варианта'} · стрелки
-          переключают
+          {variantCount} {variantCount === 2 ? 'варианта' : 'варианта'} ·
+          стрелки переключают
         </Text>
       </View>
     </View>

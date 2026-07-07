@@ -16,23 +16,20 @@ import { Text } from './text';
 
 cssInterop(Animated.View, { className: 'style' });
 
-const badgeVariants = cva(
-  'flex-row items-center rounded-full px-2.5 py-0.5',
-  {
-    variants: {
-      variant: {
-        default: 'bg-primary',
-        secondary: 'bg-secondary',
-        destructive: 'bg-destructive',
-        outline: 'border border-border bg-transparent',
-        success: 'bg-emerald-500',
-      },
-    },
-    defaultVariants: {
-      variant: 'default',
+const badgeVariants = cva('flex-row items-center rounded-full px-2.5 py-0.5', {
+  variants: {
+    variant: {
+      default: 'bg-primary',
+      secondary: 'bg-secondary',
+      destructive: 'bg-destructive',
+      outline: 'border border-border bg-transparent',
+      success: 'bg-emerald-500',
     },
   },
-);
+  defaultVariants: {
+    variant: 'default',
+  },
+});
 
 const badgeTextVariants = cva('text-xs font-semibold', {
   variants: {
@@ -50,8 +47,7 @@ const badgeTextVariants = cva('text-xs font-semibold', {
 });
 
 export interface BadgeProps
-  extends ViewProps,
-    VariantProps<typeof badgeVariants> {
+  extends ViewProps, VariantProps<typeof badgeVariants> {
   className?: string;
   textClassName?: string;
   animated?: boolean;

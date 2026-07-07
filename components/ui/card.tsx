@@ -19,7 +19,8 @@ const cardVariants = cva('rounded-lg border overflow-hidden', {
   },
 });
 
-export interface CardProps extends ViewProps, VariantProps<typeof cardVariants> {
+export interface CardProps
+  extends ViewProps, VariantProps<typeof cardVariants> {
   className?: string;
   pressable?: boolean;
   onPress?: () => void;
@@ -74,7 +75,11 @@ export function Card({
   );
 }
 
-export function CardHeader({ className, children, ...props }: ViewProps & { className?: string }) {
+export function CardHeader({
+  className,
+  children,
+  ...props
+}: ViewProps & { className?: string }) {
   return (
     <View className={cn('p-6 pb-2', className)} {...props}>
       {children}
@@ -82,7 +87,13 @@ export function CardHeader({ className, children, ...props }: ViewProps & { clas
   );
 }
 
-export function CardTitle({ className, children }: { className?: string; children: React.ReactNode }) {
+export function CardTitle({
+  className,
+  children,
+}: {
+  className?: string;
+  children: React.ReactNode;
+}) {
   return (
     <Text weight="semibold" size="lg" className={className}>
       {children}
@@ -90,7 +101,13 @@ export function CardTitle({ className, children }: { className?: string; childre
   );
 }
 
-export function CardDescription({ className, children }: { className?: string; children: React.ReactNode }) {
+export function CardDescription({
+  className,
+  children,
+}: {
+  className?: string;
+  children: React.ReactNode;
+}) {
   return (
     <Text variant="muted" size="sm" className={cn('mt-1', className)}>
       {children}
@@ -98,7 +115,11 @@ export function CardDescription({ className, children }: { className?: string; c
   );
 }
 
-export function CardContent({ className, children, ...props }: ViewProps & { className?: string }) {
+export function CardContent({
+  className,
+  children,
+  ...props
+}: ViewProps & { className?: string }) {
   return (
     <View className={cn('p-6 pt-0', className)} {...props}>
       {children}
@@ -106,9 +127,16 @@ export function CardContent({ className, children, ...props }: ViewProps & { cla
   );
 }
 
-export function CardFooter({ className, children, ...props }: ViewProps & { className?: string }) {
+export function CardFooter({
+  className,
+  children,
+  ...props
+}: ViewProps & { className?: string }) {
   return (
-    <View className={cn('flex-row items-center p-6 pt-0', className)} {...props}>
+    <View
+      className={cn('flex-row items-center p-6 pt-0', className)}
+      {...props}
+    >
       {children}
     </View>
   );

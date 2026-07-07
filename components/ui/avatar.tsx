@@ -22,9 +22,13 @@ const avatarVariants = cva(
   },
 );
 
-const AvatarContext = createContext({ loaded: false, setLoaded: (_: boolean) => {} });
+const AvatarContext = createContext({
+  loaded: false,
+  setLoaded: (_: boolean) => {},
+});
 
-export interface AvatarProps extends ViewProps, VariantProps<typeof avatarVariants> {
+export interface AvatarProps
+  extends ViewProps, VariantProps<typeof avatarVariants> {
   className?: string;
 }
 

@@ -12,10 +12,7 @@ import {
   type LayoutRectangle,
   type ViewProps,
 } from 'react-native';
-import Animated, {
-  SlideInDown,
-  SlideOutUp,
-} from 'react-native-reanimated';
+import Animated, { SlideInDown, SlideOutUp } from 'react-native-reanimated';
 import { Check, ChevronDown } from 'lucide-react-native';
 import { cssInterop } from 'react-native-css-interop';
 
@@ -58,14 +55,23 @@ export function Dropdown({
   children,
 }: DropdownProps) {
   const [internalOpen, setInternalOpen] = useState(false);
-  const [triggerLayout, setTriggerLayout] = useState<LayoutRectangle | null>(null);
+  const [triggerLayout, setTriggerLayout] = useState<LayoutRectangle | null>(
+    null,
+  );
 
   const open = controlledOpen ?? internalOpen;
   const onOpenChange = controlledOnOpenChange ?? setInternalOpen;
 
   return (
     <DropdownContext.Provider
-      value={{ open, onOpenChange, value, onValueChange, triggerLayout, setTriggerLayout }}
+      value={{
+        open,
+        onOpenChange,
+        value,
+        onValueChange,
+        triggerLayout,
+        setTriggerLayout,
+      }}
     >
       {children}
     </DropdownContext.Provider>
@@ -78,8 +84,13 @@ export interface DropdownTriggerProps {
   children?: React.ReactNode;
 }
 
-export function DropdownTrigger({ className, placeholder = 'Select...', children }: DropdownTriggerProps) {
-  const { open, onOpenChange, value, setTriggerLayout } = useContext(DropdownContext);
+export function DropdownTrigger({
+  className,
+  placeholder = 'Select...',
+  children,
+}: DropdownTriggerProps) {
+  const { open, onOpenChange, value, setTriggerLayout } =
+    useContext(DropdownContext);
   const triggerRef = useRef<View>(null);
 
   const handlePress = useCallback(() => {
@@ -100,7 +111,11 @@ export function DropdownTrigger({ className, placeholder = 'Select...', children
       accessibilityState={{ expanded: open }}
       scaleValue={0.99}
     >
-      <View ref={triggerRef} collapsable={false} className="flex-row items-center flex-1">
+      <View
+        ref={triggerRef}
+        collapsable={false}
+        className="flex-row items-center flex-1"
+      >
         {children ?? (
           <Text variant={value ? 'default' : 'muted'} size="sm">
             {value || placeholder}
@@ -117,17 +132,18 @@ export interface DropdownContentProps extends ViewProps {
   children: React.ReactNode;
 }
 
-export function DropdownContent({ className, children, ...props }: DropdownContentProps) {
+export function DropdownContent({
+  className,
+  children,
+  ...props
+}: DropdownContentProps) {
   const { open, onOpenChange, triggerLayout } = useContext(DropdownContext);
 
   if (!open) return null;
 
   return (
     <Modal visible={open} transparent animationType="none">
-      <Pressable
-        style={{ flex: 1 }}
-        onPress={() => onOpenChange(false)}
-      >
+      <Pressable style={{ flex: 1 }} onPress={() => onOpenChange(false)}>
         <Animated.View
           entering={SlideInDown.springify().damping(18).stiffness(200)}
           exiting={SlideOutUp.duration(100)}
@@ -161,7 +177,13 @@ export interface DropdownItemProps {
   className?: string;
 }
 
-export function DropdownItem({ value: itemValue, label, icon, disabled, className }: DropdownItemProps) {
+export function DropdownItem({
+  value: itemValue,
+  label,
+  icon,
+  disabled,
+  className,
+}: DropdownItemProps) {
   const { value, onValueChange, onOpenChange } = useContext(DropdownContext);
   const isSelected = value === itemValue;
 
@@ -197,9 +219,20 @@ export function DropdownSeparator({ className }: { className?: string }) {
   return <View className={cn('my-1 h-px bg-border', className)} />;
 }
 
-export function DropdownLabel({ className, children }: { className?: string; children: React.ReactNode }) {
+export function DropdownLabel({
+  className,
+  children,
+}: {
+  className?: string;
+  children: React.ReactNode;
+}) {
   return (
-    <Text size="xs" weight="semibold" variant="muted" className={cn('px-2 py-1.5', className)}>
+    <Text
+      size="xs"
+      weight="semibold"
+      variant="muted"
+      className={cn('px-2 py-1.5', className)}
+    >
       {children}
     </Text>
   );

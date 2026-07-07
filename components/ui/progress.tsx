@@ -31,7 +31,10 @@ export function Progress({
 
   return (
     <View
-      className={cn('h-3 w-full overflow-hidden rounded-full bg-secondary', className)}
+      className={cn(
+        'h-3 w-full overflow-hidden rounded-full bg-secondary',
+        className,
+      )}
       accessibilityRole="progressbar"
       accessibilityValue={{ min: 0, max, now: value }}
       {...props}

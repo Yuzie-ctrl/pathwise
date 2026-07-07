@@ -67,6 +67,9 @@ interface TripState {
      *  router should still build from-stop → drawing-start and
      *  drawing-end → to-stop. */
     partial?: boolean;
+    /** Road-snapped drawn strokes (the parts actually traced), used to render
+     *  the drawn portion distinctly from road connectors. */
+    snappedStrokes?: { latitude: number; longitude: number }[][];
     /** Chosen completion from the drawing end to the destination. */
     postConnector?: {
       coordinates: { latitude: number; longitude: number }[];
@@ -87,7 +90,10 @@ interface TripState {
    */
   drawnFromMainScreen: boolean;
   ensureOrigin: (coords?: { latitude: number; longitude: number }) => void;
-  setOriginToMyLocation: (coords: { latitude: number; longitude: number }) => void;
+  setOriginToMyLocation: (coords: {
+    latitude: number;
+    longitude: number;
+  }) => void;
   setOriginToPlace: (place: {
     label: string;
     displayName?: string;
@@ -276,7 +282,10 @@ export const useTripStore = create<TripState>()(
           drawnRoutes: [
             ...state.drawnRoutes.filter(
               (r) =>
-                !(r.fromStopId === route.fromStopId && r.toStopId === route.toStopId),
+                !(
+                  r.fromStopId === route.fromStopId &&
+                  r.toStopId === route.toStopId
+                ),
             ),
             route,
           ],
@@ -295,7 +304,10 @@ export const useTripStore = create<TripState>()(
             (h) => `${h.latitude.toFixed(5)}|${h.longitude.toFixed(5)}` !== key,
           );
           return {
-            searchHistory: [{ ...item, ts: Date.now() }, ...filtered].slice(0, 12),
+            searchHistory: [{ ...item, ts: Date.now() }, ...filtered].slice(
+              0,
+              12,
+            ),
           };
         }),
 
@@ -304,7 +316,10 @@ export const useTripStore = create<TripState>()(
     {
       name: 'rido-trip-store',
       storage: createJSONStorage(() => AsyncStorage),
-      partialize: (state) => ({ searchHistory: state.searchHistory, mode: state.mode }),
+      partialize: (state) => ({
+        searchHistory: state.searchHistory,
+        mode: state.mode,
+      }),
     },
   ),
 );

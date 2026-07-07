@@ -44,7 +44,7 @@ function loadTsConfig(projectRoot) {
     tsconfigCache = tsconfig;
     tsconfigCachePath = tsconfigPath;
     return tsconfig;
-  } catch (_error) {
+  } catch {
     // If parsing fails, return null (will skip alias resolution)
     return null;
   }
@@ -226,10 +226,7 @@ module.exports = {
                 );
                 // Fallback: treat @/ as project root when tsconfig didn't resolve (e.g. extends)
                 if (!aliasResolved && requirePath.startsWith('@/')) {
-                  aliasResolved = resolve(
-                    projectRoot,
-                    requirePath.slice(2),
-                  );
+                  aliasResolved = resolve(projectRoot, requirePath.slice(2));
                 }
                 if (aliasResolved) {
                   resolvedPath = aliasResolved;
@@ -266,7 +263,7 @@ module.exports = {
                       message: `Asset path points to a directory, not a file: ${requirePath}`,
                     });
                   }
-                } catch (_statError) {
+                } catch {
                   // If we can't stat it, assume it's fine (might be a symlink issue)
                   // The existsSync already passed, so it exists in some form
                 }

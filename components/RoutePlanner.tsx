@@ -1,5 +1,12 @@
-import { useMemo, useState } from 'react';
-import { Pressable, ScrollView, View } from 'react-native';
+import { useEffect, useMemo, useState } from 'react';
+import { Pressable, ScrollView, useWindowDimensions, View } from 'react-native';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import Animated, {
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+} from 'react-native-reanimated';
 import {
   ArrowDown,
   ArrowUp,
@@ -18,6 +25,7 @@ import {
 import { DwellPicker } from '@/components/DwellPicker';
 import { SearchSheet } from '@/components/SearchSheet';
 import { Text } from '@/components/ui/text';
+import { SPRING_CONFIGS, triggerHaptic } from '@/lib/animations';
 import {
   TimePickerModal,
   formatTimePickerLabel,
@@ -37,24 +45,39 @@ import {
   useTripStore,
 } from '@/lib/stores/tripStore';
 
-const MODE_CONFIG: Record<
-  TransportMode,
-  { icon: typeof Car; label: string }
-> = {
-  driving: { icon: Car, label: 'Авто' },
-  walking: { icon: Footprints, label: 'Пешком' },
-  transit: { icon: Bus, label: 'Автобус' },
-  cycling: { icon: Bike, label: 'Вело' },
-};
+const MODE_CONFIG: Record<TransportMode, { icon: typeof Car; label: string }> =
+  {
+    driving: { icon: Car, label: 'Авто' },
+    walking: { icon: Footprints, label: 'Пешком' },
+    transit: { icon: Bus, label: 'Автобус' },
+    cycling: { icon: Bike, label: 'Вело' },
+  };
 
 // Explicit order: Авто, Пешком, Автобус, Вело
-const MODE_ORDER: TransportMode[] = ['driving', 'walking', 'transit', 'cycling'];
+const MODE_ORDER: TransportMode[] = [
+  'driving',
+  'walking',
+  'transit',
+  'cycling',
+];
 
-const STOP_COLORS = ['#22c55e', '#ef4444', '#f59e0b', '#8b5cf6', '#06b6d4', '#ec4899'];
+const STOP_COLORS = [
+  '#22c55e',
+  '#ef4444',
+  '#f59e0b',
+  '#8b5cf6',
+  '#06b6d4',
+  '#ec4899',
+];
+
+/** Three snap positions of the sheet, top→bottom. */
+export type SheetStage = 'full' | 'half' | 'collapsed';
 
 interface RoutePlannerProps {
-  collapsed: boolean;
-  onToggleCollapsed: () => void;
+  /** Current snap stage. */
+  stage: SheetStage;
+  /** Ask the parent to move to a new stage (from tap or swipe). */
+  onStageChange: (stage: SheetStage) => void;
   onClose: () => void;
   onStartTrip: () => void;
   onChangeOrigin: () => void;
@@ -68,8 +91,8 @@ interface RoutePlannerProps {
 }
 
 export function RoutePlanner({
-  collapsed,
-  onToggleCollapsed,
+  stage,
+  onStageChange,
   onClose,
   onStartTrip,
   onChangeOrigin,
@@ -89,8 +112,12 @@ export function RoutePlanner({
   const setMode = useTripStore((s) => s.setMode);
   const drawnRoutes = useTripStore((s) => s.drawnRoutes);
 
+  const { height: screenH } = useWindowDimensions();
+
   const [searchOpen, setSearchOpen] = useState(false);
-  const [dwellPickerStopId, setDwellPickerStopId] = useState<string | null>(null);
+  const [dwellPickerStopId, setDwellPickerStopId] = useState<string | null>(
+    null,
+  );
   const [timeModal, setTimeModal] = useState(false);
   const [timeKind, setTimeKind] = useState<TimePickerKind>('depart');
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
@@ -106,6 +133,81 @@ export function RoutePlanner({
   const canShowSummary = stops.length >= 2 && legs.length > 0;
   const canStart = stops.length >= 2;
 
+  // -------------------------------------------------------------------
+  // Sheet geometry. The whole sheet is a fixed-height View pinned to the
+  // bottom; we translate it up/down to reveal more or less of it.
+  //   full      → sheet top sits near the top of the screen
+  //   half       → sheet top sits at ~50% of the screen
+  //   collapsed  → only the summary header peeks from the bottom
+  // -------------------------------------------------------------------
+  const SHEET_HEIGHT = Math.round(screenH * 0.9);
+  const COLLAPSED_PEEK = 116; // visible height when collapsed
+  const OFFSETS = useMemo(
+    () => ({
+      full: Math.max(48, screenH - SHEET_HEIGHT), // translateY when fully open
+      half: Math.round(screenH * 0.5),
+      collapsed: screenH - COLLAPSED_PEEK,
+    }),
+    [screenH, SHEET_HEIGHT],
+  );
+
+  const translateY = useSharedValue(OFFSETS[stage]);
+  const startY = useSharedValue(OFFSETS[stage]);
+
+  // Keep the animated position in sync when the parent drives the stage.
+  useEffect(() => {
+    translateY.value = withSpring(OFFSETS[stage], SPRING_CONFIGS.gentle);
+  }, [stage, OFFSETS, translateY]);
+
+  const commitStage = (next: SheetStage) => {
+    triggerHaptic('light');
+    onStageChange(next);
+  };
+
+  const panGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        .onStart(() => {
+          startY.value = translateY.value;
+        })
+        .onUpdate((e) => {
+          const next = startY.value + e.translationY;
+          translateY.value = Math.min(
+            OFFSETS.collapsed,
+            Math.max(OFFSETS.full, next),
+          );
+        })
+        .onEnd((e) => {
+          const order: SheetStage[] = ['full', 'half', 'collapsed'];
+          const currentIdx = order.indexOf(stage);
+          const v = e.velocityY;
+          const dy = e.translationY;
+          const STRONG = 1400; // px/s → jump to extreme
+          const STEP = 40; // px → move one stage
+
+          let targetIdx = currentIdx;
+          if (v > STRONG || dy > screenH * 0.28) {
+            targetIdx = 2; // strong swipe down → collapsed extreme
+          } else if (v < -STRONG || dy < -screenH * 0.28) {
+            targetIdx = 0; // strong swipe up → full extreme
+          } else if (dy > STEP) {
+            targetIdx = Math.min(2, currentIdx + 1); // one stage down
+          } else if (dy < -STEP) {
+            targetIdx = Math.max(0, currentIdx - 1); // one stage up
+          }
+
+          const target = order[targetIdx];
+          translateY.value = withSpring(OFFSETS[target], SPRING_CONFIGS.gentle);
+          if (target !== stage) runOnJS(commitStage)(target);
+        }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [stage, OFFSETS, screenH],
+  );
+
+  const sheetStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: translateY.value }],
+  }));
+
   const summary = useMemo(() => {
     if (!canShowSummary) return null;
     return {
@@ -115,7 +217,13 @@ export function RoutePlanner({
       distance: formatDistance(distanceMeters),
       eta: formatETA(totalSeconds),
     };
-  }, [canShowSummary, totalSeconds, travelSeconds, dwellMinutes, distanceMeters]);
+  }, [
+    canShowSummary,
+    totalSeconds,
+    travelSeconds,
+    dwellMinutes,
+    distanceMeters,
+  ]);
 
   const handleSelectPlace = (result: GeocodeResult) => {
     addStop({
@@ -138,30 +246,45 @@ export function RoutePlanner({
     );
   }
 
+  const collapsed = stage === 'collapsed';
+  // Tap on the grabber cycles collapsed → half → full → collapsed.
+  const cycleStage = () => {
+    const next: SheetStage =
+      stage === 'collapsed' ? 'half' : stage === 'half' ? 'full' : 'collapsed';
+    commitStage(next);
+  };
+
   return (
-    <View
-      className="absolute inset-x-0 bottom-0 z-40 rounded-t-3xl bg-card"
-      style={{
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: -4 },
-        shadowOpacity: 0.15,
-        shadowRadius: 12,
-        elevation: 12,
-        maxHeight: '85%',
-      }}
+    <Animated.View
+      className="absolute inset-x-0 top-0 z-40 rounded-t-3xl bg-card"
+      style={[
+        {
+          height: SHEET_HEIGHT,
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: -4 },
+          shadowOpacity: 0.15,
+          shadowRadius: 12,
+          elevation: 12,
+        },
+        sheetStyle,
+      ]}
     >
-      {/* Grabber — tapping collapses/expands */}
-      <Pressable
-        onPress={onToggleCollapsed}
-        hitSlop={12}
-        className={collapsed ? 'items-center pb-3 pt-3' : 'items-center pb-1 pt-2'}
-      >
-        <View className="h-1.5 w-12 rounded-full bg-muted-foreground/40" />
-      </Pressable>
+      {/* Grabber — draggable + tap cycles stages */}
+      <GestureDetector gesture={panGesture}>
+        <Pressable
+          onPress={cycleStage}
+          hitSlop={12}
+          className={
+            collapsed ? 'items-center pb-3 pt-3' : 'items-center pb-1 pt-2'
+          }
+        >
+          <View className="h-1.5 w-12 rounded-full bg-muted-foreground/40" />
+        </Pressable>
+      </GestureDetector>
 
       {collapsed ? (
         <Pressable
-          onPress={onToggleCollapsed}
+          onPress={() => commitStage('half')}
           className="flex-row items-center justify-between px-4 pb-5"
         >
           <View className="flex-1">
@@ -194,10 +317,12 @@ export function RoutePlanner({
       ) : null}
 
       {collapsed ? null : (
-        <>
+        <View style={{ flex: 1 }}>
           <View className="flex-row items-center justify-between px-4 pb-2 pt-1">
             <View className="flex-1">
-              <Text className="text-lg font-semibold text-foreground">Маршрут</Text>
+              <Text className="text-lg font-semibold text-foreground">
+                Маршрут
+              </Text>
               <Text className="text-xs text-muted-foreground">
                 {stops.length <= 1
                   ? 'Добавьте точку назначения'
@@ -226,7 +351,9 @@ export function RoutePlanner({
                   key={m}
                   onPress={() => setMode(m)}
                   className={`flex-1 items-center justify-center gap-1 rounded-xl border py-2 ${
-                    active ? 'border-primary bg-primary' : 'border-border bg-muted'
+                    active
+                      ? 'border-primary bg-primary'
+                      : 'border-border bg-muted'
                   }`}
                 >
                   <Icon size={18} color={active ? '#fff' : '#444'} />
@@ -253,7 +380,10 @@ export function RoutePlanner({
                 <Text className="text-[10px] font-medium text-muted-foreground">
                   {timeKind === 'depart' ? 'Отправление' : 'Прибытие'}
                 </Text>
-                <Text className="text-xs font-semibold text-foreground" numberOfLines={1}>
+                <Text
+                  className="text-xs font-semibold text-foreground"
+                  numberOfLines={1}
+                >
                   {formatTimePickerLabel(selectedDate)}
                 </Text>
               </View>
@@ -264,7 +394,9 @@ export function RoutePlanner({
           {summary ? (
             <View className="mx-4 mb-3 rounded-2xl bg-muted p-3">
               <View className="flex-row items-baseline justify-between">
-                <Text className="text-2xl font-bold text-foreground">{summary.total}</Text>
+                <Text className="text-2xl font-bold text-foreground">
+                  {summary.total}
+                </Text>
                 <Text className="text-sm text-muted-foreground">
                   прибытие ≈ {summary.eta}
                 </Text>
@@ -278,18 +410,22 @@ export function RoutePlanner({
                     остановки {summary.dwell}
                   </Text>
                 ) : null}
-                <Text className="text-xs text-muted-foreground">{summary.distance}</Text>
+                <Text className="text-xs text-muted-foreground">
+                  {summary.distance}
+                </Text>
               </View>
             </View>
           ) : loadingRoute ? (
             <View className="mx-4 mb-3 rounded-2xl bg-muted p-3">
-              <Text className="text-sm text-muted-foreground">Строим маршрут…</Text>
+              <Text className="text-sm text-muted-foreground">
+                Строим маршрут…
+              </Text>
             </View>
           ) : null}
 
           {/* Stops list */}
           <ScrollView
-            style={{ maxHeight: 320 }}
+            style={{ flex: 1 }}
             contentContainerStyle={{ paddingBottom: 8 }}
             showsVerticalScrollIndicator={false}
           >
@@ -309,16 +445,16 @@ export function RoutePlanner({
                       className="h-7 w-7 items-center justify-center rounded-full"
                       style={{ backgroundColor: color }}
                     >
-                      <Text className="text-xs font-bold text-white">{idx + 1}</Text>
+                      <Text className="text-xs font-bold text-white">
+                        {idx + 1}
+                      </Text>
                     </View>
 
                     {isOrigin ? (
                       <Pressable
                         onPress={onChangeOrigin}
                         className={`flex-1 flex-row items-center gap-2 rounded-lg px-2 py-1.5 active:bg-muted ${
-                          stop.originKind === 'myLocation'
-                            ? 'bg-muted/50'
-                            : ''
+                          stop.originKind === 'myLocation' ? 'bg-muted/50' : ''
                         }`}
                       >
                         <View className="flex-1">
@@ -371,7 +507,11 @@ export function RoutePlanner({
                          маршрут" instead. */}
                     {!isOrigin &&
                     onDrawForStop &&
-                    !(stops.length === 2 && drawnRoutes.length >= 1 && idx === 1) ? (
+                    !(
+                      stops.length === 2 &&
+                      drawnRoutes.length >= 1 &&
+                      idx === 1
+                    ) ? (
                       <Pressable
                         onPress={() => onDrawForStop(stop.id)}
                         hitSlop={6}
@@ -411,7 +551,10 @@ export function RoutePlanner({
                           disabled={idx <= 1}
                           className="p-1"
                         >
-                          <ArrowUp size={14} color={idx <= 1 ? '#ccc' : '#666'} />
+                          <ArrowUp
+                            size={14}
+                            color={idx <= 1 ? '#ccc' : '#666'}
+                          />
                         </Pressable>
                         <Pressable
                           onPress={() => moveStop(stop.id, 1)}
@@ -419,7 +562,10 @@ export function RoutePlanner({
                           disabled={isLast}
                           className="p-1"
                         >
-                          <ArrowDown size={14} color={isLast ? '#ccc' : '#666'} />
+                          <ArrowDown
+                            size={14}
+                            color={isLast ? '#ccc' : '#666'}
+                          />
                         </Pressable>
                       </View>
                     ) : null}
@@ -436,7 +582,9 @@ export function RoutePlanner({
                       </Pressable>
                     ) : null}
                   </View>
-                  {!isLast ? <View className="ml-3 h-3 w-0.5 bg-border" /> : null}
+                  {!isLast ? (
+                    <View className="ml-3 h-3 w-0.5 bg-border" />
+                  ) : null}
                 </View>
               );
             })}
@@ -490,10 +638,7 @@ export function RoutePlanner({
                   : undefined
               }
             >
-              <Navigation2
-                size={18}
-                color={canStart ? '#fff' : '#999'}
-              />
+              <Navigation2 size={18} color={canStart ? '#fff' : '#999'} />
               <Text
                 className={`text-base font-semibold ${
                   canStart ? 'text-primary-foreground' : 'text-muted-foreground'
@@ -503,7 +648,7 @@ export function RoutePlanner({
               </Text>
             </Pressable>
           </View>
-        </>
+        </View>
       )}
 
       <DwellPicker
@@ -525,7 +670,7 @@ export function RoutePlanner({
         onChangeKind={setTimeKind}
         onClose={() => setTimeModal(false)}
       />
-    </View>
+    </Animated.View>
   );
 }
 

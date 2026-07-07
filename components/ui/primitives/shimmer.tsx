@@ -35,7 +35,10 @@ export function Shimmer({ width, duration = 1500, className }: ShimmerProps) {
   }));
 
   return (
-    <View className={cn('overflow-hidden absolute inset-0', className)} pointerEvents="none">
+    <View
+      className={cn('overflow-hidden absolute inset-0', className)}
+      pointerEvents="none"
+    >
       <AnimatedLinearGradient
         colors={['transparent', 'rgba(255,255,255,0.2)', 'transparent']}
         start={{ x: 0, y: 0.5 }}

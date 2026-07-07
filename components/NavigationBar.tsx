@@ -4,11 +4,7 @@ import * as Location from 'expo-location';
 import { ArrowLeft, MapPin, Navigation2, X } from 'lucide-react-native';
 
 import { Text } from '@/components/ui/text';
-import {
-  formatDistance,
-  formatDuration,
-  haversine,
-} from '@/lib/routing';
+import { formatDistance, formatDuration, haversine } from '@/lib/routing';
 import {
   totalDistanceMeters,
   totalDwellMinutes,
@@ -30,7 +26,11 @@ interface NavigationBarProps {
  * show next-stop distance, elapsed progress along the current leg, and
  * overall ETA — enough to feel like Google Maps during navigation.
  */
-export function NavigationBar({ onBack, onExit, onUserLocation }: NavigationBarProps) {
+export function NavigationBar({
+  onBack,
+  onExit,
+  onUserLocation,
+}: NavigationBarProps) {
   const stops = useTripStore((s) => s.stops);
   const legs = useTripStore((s) => s.legs);
 
@@ -126,7 +126,9 @@ export function NavigationBar({ onBack, onExit, onUserLocation }: NavigationBarP
           <Navigation2 size={20} color="#fff" />
         </View>
         <View className="flex-1">
-          <Text className="text-xs text-primary-foreground/80">Следующая точка</Text>
+          <Text className="text-xs text-primary-foreground/80">
+            Следующая точка
+          </Text>
           <Text
             className="text-base font-semibold text-primary-foreground"
             numberOfLines={1}
@@ -140,7 +142,8 @@ export function NavigationBar({ onBack, onExit, onUserLocation }: NavigationBarP
               </Text>
             ) : null}
             <Text className="text-xs text-primary-foreground/80">
-              всего {formatDuration(totalSeconds)} · {formatDistance(totalDistance)}
+              всего {formatDuration(totalSeconds)} ·{' '}
+              {formatDistance(totalDistance)}
             </Text>
           </View>
         </View>

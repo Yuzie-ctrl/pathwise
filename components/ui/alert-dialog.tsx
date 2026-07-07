@@ -1,9 +1,6 @@
 import React, { createContext, useContext } from 'react';
 import { Modal, Pressable, View, type ViewProps } from 'react-native';
-import Animated, {
-  FadeOut,
-  ZoomIn,
-} from 'react-native-reanimated';
+import Animated, { FadeOut, ZoomIn } from 'react-native-reanimated';
 import { cssInterop } from 'react-native-css-interop';
 
 import { triggerHaptic } from '@/lib/animations';
@@ -30,7 +27,11 @@ export interface AlertDialogProps {
   children: React.ReactNode;
 }
 
-export function AlertDialog({ open, onOpenChange, children }: AlertDialogProps) {
+export function AlertDialog({
+  open,
+  onOpenChange,
+  children,
+}: AlertDialogProps) {
   return (
     <AlertDialogContext.Provider value={{ open, onOpenChange }}>
       {children}
@@ -58,7 +59,11 @@ export interface AlertDialogContentProps extends ViewProps {
   children: React.ReactNode;
 }
 
-export function AlertDialogContent({ className, children, ...props }: AlertDialogContentProps) {
+export function AlertDialogContent({
+  className,
+  children,
+  ...props
+}: AlertDialogContentProps) {
   const { open, onOpenChange } = useContext(AlertDialogContext);
 
   React.useEffect(() => {
@@ -87,7 +92,11 @@ export function AlertDialogContent({ className, children, ...props }: AlertDialo
   );
 }
 
-export function AlertDialogHeader({ className, children, ...props }: ViewProps & { className?: string }) {
+export function AlertDialogHeader({
+  className,
+  children,
+  ...props
+}: ViewProps & { className?: string }) {
   return (
     <View className={cn('mb-4', className)} {...props}>
       {children}
@@ -95,7 +104,13 @@ export function AlertDialogHeader({ className, children, ...props }: ViewProps &
   );
 }
 
-export function AlertDialogTitle({ className, children }: { className?: string; children: React.ReactNode }) {
+export function AlertDialogTitle({
+  className,
+  children,
+}: {
+  className?: string;
+  children: React.ReactNode;
+}) {
   return (
     <Text weight="semibold" size="lg" className={className}>
       {children}
@@ -103,7 +118,13 @@ export function AlertDialogTitle({ className, children }: { className?: string; 
   );
 }
 
-export function AlertDialogDescription({ className, children }: { className?: string; children: React.ReactNode }) {
+export function AlertDialogDescription({
+  className,
+  children,
+}: {
+  className?: string;
+  children: React.ReactNode;
+}) {
   return (
     <Text variant="muted" size="sm" className={cn('mt-1', className)}>
       {children}
@@ -111,7 +132,11 @@ export function AlertDialogDescription({ className, children }: { className?: st
   );
 }
 
-export function AlertDialogFooter({ className, children, ...props }: ViewProps & { className?: string }) {
+export function AlertDialogFooter({
+  className,
+  children,
+  ...props
+}: ViewProps & { className?: string }) {
   return (
     <View className={cn('flex-row justify-end gap-2', className)} {...props}>
       {children}
@@ -127,7 +152,10 @@ export function AlertDialogAction({ children, ...props }: ButtonProps) {
   );
 }
 
-export function AlertDialogCancel({ children, ...props }: Omit<ButtonProps, 'variant'>) {
+export function AlertDialogCancel({
+  children,
+  ...props
+}: Omit<ButtonProps, 'variant'>) {
   const { onOpenChange } = useContext(AlertDialogContext);
 
   return (

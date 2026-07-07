@@ -2,7 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Location from 'expo-location';
-import { Brush, CalendarClock, Eye, EyeOff, Locate, Search } from 'lucide-react-native';
+import {
+  Brush,
+  CalendarClock,
+  Eye,
+  EyeOff,
+  Locate,
+  Search,
+} from 'lucide-react-native';
 
 import MapView, {
   type MapMarker,
@@ -13,7 +20,7 @@ import { DrawCanvas } from '@/components/DrawCanvas';
 import { AmbiguityPrompt } from '@/components/AmbiguityPrompt';
 import { MallSheet } from '@/components/MallSheet';
 import { NavigationBar } from '@/components/NavigationBar';
-import { RoutePlanner } from '@/components/RoutePlanner';
+import { RoutePlanner, type SheetStage } from '@/components/RoutePlanner';
 import { SearchSheet } from '@/components/SearchSheet';
 import { TransitPlanner } from '@/components/TransitPlanner';
 import { TransportScheduleSheet } from '@/components/TransportScheduleSheet';
@@ -38,14 +45,8 @@ import {
 import { MALLS, type Mall } from '@/lib/malls';
 import { useTripStore, type TransportMode } from '@/lib/stores/tripStore';
 
-const STOP_COLORS: ('green' | 'red' | 'orange' | 'purple' | 'cyan' | 'blue')[] = [
-  'green',
-  'red',
-  'orange',
-  'purple',
-  'cyan',
-  'blue',
-];
+const STOP_COLORS: ('green' | 'red' | 'orange' | 'purple' | 'cyan' | 'blue')[] =
+  ['green', 'red', 'orange', 'purple', 'cyan', 'blue'];
 
 // Route line style per transport mode
 const MODE_STYLE: Record<
@@ -89,10 +90,10 @@ export default function Home() {
     longitude: number;
   } | null>(null);
   const [heading, setHeading] = useState<number | null>(null);
-  const [plannerCollapsed, setPlannerCollapsed] = useState(false);
-  const [searchMode, setSearchMode] = useState<null | 'destination' | 'origin' | 'stop'>(
-    null,
-  );
+  const [plannerStage, setPlannerStage] = useState<SheetStage>('half');
+  const [searchMode, setSearchMode] = useState<
+    null | 'destination' | 'origin' | 'stop'
+  >(null);
   const [locating, setLocating] = useState(false);
   const [drawing, setDrawing] = useState(false);
   const [drawProcessing, setDrawProcessing] = useState(false);
@@ -142,6 +143,9 @@ export default function Home() {
   } | null>(null);
 
   const routeReqRef = useRef(0);
+  /** When set, skip the next fit-to-stops auto-camera (used right after we
+   *  explicitly zoom to the first stop on search-select). */
+  const suppressFitRef = useRef(false);
 
   const plannerVisible = stops.length >= 2;
 
@@ -153,7 +157,10 @@ export default function Home() {
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
-        Alert.alert('Нет доступа', 'Разрешите доступ к геолокации в настройках');
+        Alert.alert(
+          'Нет доступа',
+          'Разрешите доступ к геолокации в настройках',
+        );
         return;
       }
       const loc = await Location.getCurrentPositionAsync({
@@ -275,6 +282,11 @@ export default function Home() {
   useEffect(() => {
     if (navigating) return;
     if (stops.length < 2) return;
+    // Skip once when we just explicitly zoomed to the first stop.
+    if (suppressFitRef.current) {
+      suppressFitRef.current = false;
+      return;
+    }
     // When any drawn override exists, don't auto-fit — the user just drew
     // it and any camera change would visually reflow/shift the view.
     if (drawnRoutes.length > 0) return;
@@ -415,7 +427,17 @@ export default function Home() {
         lineDashPattern: legStyle.dashed ? [8, 6] : undefined,
       };
     });
-  }, [legs, stops, style, mode, drawing, ambiguity, postChooser, transitPeeking, drawnStrokesAdapted]);
+  }, [
+    legs,
+    stops,
+    style,
+    mode,
+    drawing,
+    ambiguity,
+    postChooser,
+    transitPeeking,
+    drawnStrokesAdapted,
+  ]);
 
   const markers: MapMarker[] = useMemo(() => {
     const out: MapMarker[] = [];
@@ -470,29 +492,36 @@ export default function Home() {
     // Numbered segment badges — place at midpoint of each logical segment.
     // When a segment contains a hand-drawn sub-leg, anchor the badge to that
     // drawn stretch and color it pink so the user sees which part is drawn.
-    const segments = new Map<
-      number,
-      { coords: { latitude: number; longitude: number }[]; drawnCoords: { latitude: number; longitude: number }[] | null }
-    >();
-    legs.forEach((leg, i) => {
-      const segIdx = leg.segmentIndex ?? i;
-      const entry = segments.get(segIdx) ?? { coords: [], drawnCoords: null };
-      entry.coords.push(...leg.coordinates);
-      if (leg.drawn) entry.drawnCoords = leg.coordinates;
-      segments.set(segIdx, entry);
-    });
-    segments.forEach((entry, segIdx) => {
-      const isDrawn = !!entry.drawnCoords;
-      const anchor = entry.drawnCoords ?? entry.coords;
-      const mid = midpointOfLine(anchor);
-      if (!mid) return;
-      out.push({
-        id: `leg-badge-${segIdx}`,
-        coordinate: mid,
-        badgeText: String(segIdx + 1),
-        badgeColor: isDrawn ? '#ec4899' : style.color,
+    // Hidden while drawing/editing so the overall-route number circle does
+    // not linger over the canvas.
+    if (!drawing) {
+      const segments = new Map<
+        number,
+        {
+          coords: { latitude: number; longitude: number }[];
+          drawnCoords: { latitude: number; longitude: number }[] | null;
+        }
+      >();
+      legs.forEach((leg, i) => {
+        const segIdx = leg.segmentIndex ?? i;
+        const entry = segments.get(segIdx) ?? { coords: [], drawnCoords: null };
+        entry.coords.push(...leg.coordinates);
+        if (leg.drawn) entry.drawnCoords = leg.coordinates;
+        segments.set(segIdx, entry);
       });
-    });
+      segments.forEach((entry, segIdx) => {
+        const isDrawn = !!entry.drawnCoords;
+        const anchor = entry.drawnCoords ?? entry.coords;
+        const mid = midpointOfLine(anchor);
+        if (!mid) return;
+        out.push({
+          id: `leg-badge-${segIdx}`,
+          coordinate: mid,
+          badgeText: String(segIdx + 1),
+          badgeColor: isDrawn ? '#ec4899' : style.color,
+        });
+      });
+    }
 
     // Dwell badges next to each stop that has a non-zero dwell (skip last)
     stops.forEach((s, idx) => {
@@ -542,7 +571,17 @@ export default function Home() {
       });
     }
     return out;
-  }, [stops, legs, userLocation, style, heading, drawing, drawTargetStopId, navigating, mallsVisible]);
+  }, [
+    stops,
+    legs,
+    userLocation,
+    style,
+    heading,
+    drawing,
+    drawTargetStopId,
+    navigating,
+    mallsVisible,
+  ]);
 
   // ---------------------------------------------------------------------
   // Handlers
@@ -612,8 +651,24 @@ export default function Home() {
       useTripStore.getState().setMode('walking');
     }
     setSearchMode(null);
-    setPlannerCollapsed(false);
+    setPlannerStage('half');
+    // Zoom the map in on the first (start) point of the route.
+    zoomToFirstStop();
   };
+
+  /** Animate the camera to focus on the first stop (origin) of the trip. */
+  const zoomToFirstStop = useCallback(() => {
+    const cur = useTripStore.getState().stops;
+    const first = cur.find((s) => s.latitude !== 0 || s.longitude !== 0);
+    if (!first) return;
+    suppressFitRef.current = true;
+    setRegion({
+      latitude: first.latitude,
+      longitude: first.longitude,
+      latitudeDelta: 0.012,
+      longitudeDelta: 0.012,
+    });
+  }, []);
 
   const handleEditStop = useCallback((stopId: string) => {
     setEditingStopId(stopId);
@@ -646,7 +701,7 @@ export default function Home() {
     // Full reset: remove all stops, legs, and navigation state.
     clearStops();
     setNavigating(false);
-    setPlannerCollapsed(false);
+    setPlannerStage('half');
     setSelectedTransitOption(null);
   };
 
@@ -656,24 +711,27 @@ export default function Home() {
       if (userLocation) {
         setOriginToMyLocation(userLocation);
       } else {
-        Alert.alert('Нет точки отправления', 'Включите геолокацию или выберите точку вручную');
+        Alert.alert(
+          'Нет точки отправления',
+          'Включите геолокацию или выберите точку вручную',
+        );
         return;
       }
     }
     setNavigating(true);
-    setPlannerCollapsed(true);
+    setPlannerStage('collapsed');
   };
 
   const handleStopTrip = () => {
     // Stop trip only — keep stops so user can resume from planner.
     setNavigating(false);
-    setPlannerCollapsed(false);
+    setPlannerStage('half');
   };
 
   const handleExitTripAndReset = () => {
     setNavigating(false);
     clearStops();
-    setPlannerCollapsed(false);
+    setPlannerStage('half');
   };
 
   const applyMatchedRoute = async (matched: MatchedRoute) => {
@@ -705,9 +763,10 @@ export default function Home() {
       // drawn a bus override, a driving override, etc. Do NOT force walking.
       setDrawTargetStopId(null);
       setDrawing(false);
-      // Show the planner expanded so the user can immediately see the route
-      // summary (total time / distance) down to the bottom of the sheet.
-      setPlannerCollapsed(false);
+      // Half-open the planner so both the map and the point list are visible.
+      setPlannerStage('half');
+      // Focus the camera on the first (start) point of the route.
+      zoomToFirstStop();
 
       // Offer two ways to finish the connector from the drawing end to the
       // destination: a possibly-U-turning shortest route vs a straight-ahead
@@ -715,7 +774,11 @@ export default function Home() {
       const drawEnd = matched.coordinates[matched.coordinates.length - 1];
       const destPt = { latitude: toStop.latitude, longitude: toStop.longitude };
       try {
-        const variants = await computePostConnectorVariants(drawEnd, destPt, mode);
+        const variants = await computePostConnectorVariants(
+          drawEnd,
+          destPt,
+          mode,
+        );
         if (variants) {
           setPostChooser({
             fromStopId: fromStop.id,
@@ -774,19 +837,20 @@ export default function Home() {
           coordinates: matched.coordinates,
           distanceMeters: matched.distanceMeters,
           durationSeconds: matched.durationSeconds,
+          snappedStrokes: matched.snappedStrokes,
         },
       ]);
     }
     // Default to walking right after drawing from the main screen.
     useTripStore.getState().setMode('walking');
     setDrawnFromMainScreen(true);
-    setDrawnStrokesAdapted(
-      matched.snappedStrokes ?? [matched.coordinates],
-    );
+    setDrawnStrokesAdapted(matched.snappedStrokes ?? [matched.coordinates]);
     setDrawing(false);
     setInitialStrokes(undefined);
-    // Expanded so the route summary (total time + distance) is visible.
-    setPlannerCollapsed(false);
+    // Half-open the planner so both the map and the point list are visible.
+    setPlannerStage('half');
+    // Focus the camera on the first (start) point of the route.
+    zoomToFirstStop();
   };
 
   const finalizeMatched = async (matched: MatchedRoute) => {
@@ -800,7 +864,11 @@ export default function Home() {
     rawStrokes: { latitude: number; longitude: number }[][],
   ) => {
     try {
-      const spot = await detectAmbiguousSpot(rawStrokes, matched.coordinates, mode);
+      const spot = await detectAmbiguousSpot(
+        rawStrokes,
+        matched.coordinates,
+        mode,
+      );
       if (spot && spot.variants.length >= 2) {
         // Hold the matched route, zoom to the fork, show the prompt.
         setAmbiguity({ spot, matched, activeIndex: 0 });
@@ -824,7 +892,12 @@ export default function Home() {
   ) => {
     setDrawProcessing(true);
     try {
-      const matched = await matchDrawnRoute(coords, mode);
+      const matched = await matchDrawnRoute(
+        coords,
+        mode,
+        undefined,
+        region.latitudeDelta,
+      );
       await maybePromptThenApply(matched, [coords]);
     } catch {
       Alert.alert('Ошибка', 'Не удалось построить маршрут по рисунку');
@@ -838,7 +911,12 @@ export default function Home() {
   ) => {
     setDrawProcessing(true);
     try {
-      const matched = await matchDrawnStrokes(strokes, mode);
+      const matched = await matchDrawnStrokes(
+        strokes,
+        mode,
+        undefined,
+        region.latitudeDelta,
+      );
       await maybePromptThenApply(matched, strokes);
     } catch {
       Alert.alert('Ошибка', 'Не удалось построить маршрут по рисунку');
@@ -1004,7 +1082,8 @@ export default function Home() {
       );
       let startRatio = 0;
       for (let i = 0; i < segmentIndex; i++) {
-        startRatio += Math.max(1, opt.segments[i].distanceMeters) / totalSegDist;
+        startRatio +=
+          Math.max(1, opt.segments[i].distanceMeters) / totalSegDist;
       }
       const endRatio =
         startRatio +
@@ -1075,10 +1154,15 @@ export default function Home() {
   // ---------------------------------------------------------------------
   // Hide top "Куда едем?" bar once user has picked at least one destination
   // (i.e. a trip is being planned).
-  const showTopSearchBar = !drawing && !navigating && !ambiguity && !postChooser && stops.length === 0;
-  // Brush is only available when no trip is being planned yet OR planner is expanded.
+  const showTopSearchBar =
+    !drawing && !navigating && !ambiguity && !postChooser && stops.length === 0;
+  // Brush is only available when no trip is being planned yet OR planner isn't collapsed.
   const showBrush =
-    !drawing && !navigating && !ambiguity && !postChooser && (stops.length === 0 || !plannerCollapsed);
+    !drawing &&
+    !navigating &&
+    !ambiguity &&
+    !postChooser &&
+    (stops.length === 0 || plannerStage !== 'collapsed');
 
   return (
     <View style={{ flex: 1 }} className="bg-background">
@@ -1095,7 +1179,10 @@ export default function Home() {
 
       {/* Top search bar — only when no trip is being planned */}
       {showTopSearchBar ? (
-        <SafeAreaView edges={['top']} style={{ position: 'absolute', left: 0, right: 0, top: 0 }}>
+        <SafeAreaView
+          edges={['top']}
+          style={{ position: 'absolute', left: 0, right: 0, top: 0 }}
+        >
           <View className="px-4 pt-2">
             <View className="flex-row items-center gap-2">
               <Pressable
@@ -1114,7 +1201,9 @@ export default function Home() {
                   Куда едем?
                 </Text>
                 <View className="rounded-full bg-primary/10 px-2 py-1">
-                  <Text className="text-xs font-semibold text-primary">Rido</Text>
+                  <Text className="text-xs font-semibold text-primary">
+                    Rido
+                  </Text>
                 </View>
               </Pressable>
               <Pressable
@@ -1135,18 +1224,23 @@ export default function Home() {
         </SafeAreaView>
       ) : null}
 
-      {/* Persistent top button — re-enter draw editor whenever a drawn route
-          exists on the main screen (does not disappear when planner collapses). */}
-      {drawnRoutes.length > 0 && !drawing && !navigating && !ambiguity ? (
+      {/* Persistent top button — re-enter draw editor. Shown ONLY when the
+          point-selector sheet is fully collapsed (map is full-screen); when
+          the sheet is at half or full, the in-sheet button is used instead. */}
+      {drawnRoutes.length > 0 &&
+      !drawing &&
+      !navigating &&
+      !ambiguity &&
+      (!plannerVisible || plannerStage === 'collapsed') ? (
         <SafeAreaView
           edges={['top']}
           pointerEvents="box-none"
           style={{ position: 'absolute', left: 0, right: 0, top: 0 }}
         >
-          <View className="px-4 pt-2" pointerEvents="box-none">
+          <View className="items-center px-4 pt-2" pointerEvents="box-none">
             <Pressable
               onPress={handleEditDrawnRoute}
-              className="flex-row items-center gap-2 self-start rounded-full bg-card px-4 py-2.5"
+              className="flex-row items-center gap-2 self-center rounded-full bg-card px-4 py-2.5"
               style={{
                 shadowColor: '#000',
                 shadowOffset: { width: 0, height: 2 },
@@ -1194,11 +1288,13 @@ export default function Home() {
               top: selectedTransitOption ? 8 : undefined,
               bottom: selectedTransitOption
                 ? undefined
-                : plannerVisible && !plannerCollapsed
+                : plannerVisible && plannerStage === 'full'
                   ? 360
-                  : plannerVisible && plannerCollapsed
-                    ? 120
-                    : 40,
+                  : plannerVisible && plannerStage === 'half'
+                    ? 360
+                    : plannerVisible && plannerStage === 'collapsed'
+                      ? 140
+                      : 40,
             }}
             pointerEvents="box-none"
           >
@@ -1261,10 +1357,15 @@ export default function Home() {
       ) : null}
 
       {/* Planner bottom sheet (non-transit modes) */}
-      {plannerVisible && !navigating && !drawing && !ambiguity && !postChooser && mode !== 'transit' ? (
+      {plannerVisible &&
+      !navigating &&
+      !drawing &&
+      !ambiguity &&
+      !postChooser &&
+      mode !== 'transit' ? (
         <RoutePlanner
-          collapsed={plannerCollapsed}
-          onToggleCollapsed={() => setPlannerCollapsed((v) => !v)}
+          stage={plannerStage}
+          onStageChange={setPlannerStage}
           onClose={handleClosePlanner}
           onStartTrip={handleStartTrip}
           onChangeOrigin={openOriginSearch}
@@ -1276,7 +1377,12 @@ export default function Home() {
       ) : null}
 
       {/* Transit full-screen planner */}
-      {plannerVisible && !navigating && !drawing && !ambiguity && !postChooser && mode === 'transit' ? (
+      {plannerVisible &&
+      !navigating &&
+      !drawing &&
+      !ambiguity &&
+      !postChooser &&
+      mode === 'transit' ? (
         <TransitPlanner
           onClose={handleClosePlanner}
           onAddStop={openStopSearch}
@@ -1420,7 +1526,9 @@ export default function Home() {
               onSelect={handleSearchSelect}
               onClose={closeSearch}
               onPickMyLocation={
-                userLocation || searchMode !== 'origin' ? handlePickMyLocation : undefined
+                userLocation || searchMode !== 'origin'
+                  ? handlePickMyLocation
+                  : undefined
               }
               onPickDraw={handlePickDraw}
             />

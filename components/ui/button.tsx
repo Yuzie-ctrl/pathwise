@@ -58,7 +58,8 @@ const buttonTextVariants = cva('text-sm font-semibold text-center', {
 });
 
 export interface ButtonProps
-  extends Omit<PressableProps, 'children'>,
+  extends
+    Omit<PressableProps, 'children'>,
     VariantProps<typeof buttonVariants> {
   loading?: boolean;
   className?: string;
