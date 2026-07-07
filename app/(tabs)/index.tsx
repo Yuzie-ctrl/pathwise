@@ -656,20 +656,84 @@ export default function Home() {
     zoomToFirstStop();
   };
 
-  /** Animate the camera to focus on the first stop (origin) of the trip. */
+  /** Animate the camera so the ENTIRE route is visible within the TOP HALF of
+   *  the screen (with a small margin). We fit all valid stops, then push the
+   *  region center downward (south) by ~a quarter of the latitude span so the
+   *  route sits in the upper portion of the map rather than dead-center. */
   const zoomToFirstStop = useCallback(() => {
     const cur = useTripStore.getState().stops;
-    const first = cur.find((s) => s.latitude !== 0 || s.longitude !== 0);
-    if (!first) return;
+    const valid = cur.filter((s) => s.latitude !== 0 || s.longitude !== 0);
+    if (valid.length === 0) return;
     suppressFitRef.current = true;
+
+    if (valid.length === 1) {
+      const only = valid[0];
+      const latDelta = 0.02;
+      setRegion({
+        // Push the single point up into the top half: shift center south.
+        latitude: only.latitude - latDelta * 0.25,
+        longitude: only.longitude,
+        latitudeDelta: latDelta,
+        longitudeDelta: latDelta,
+      });
+      return;
+    }
+
+    const lats = valid.map((s) => s.latitude);
+    const lons = valid.map((s) => s.longitude);
+    const minLat = Math.min(...lats);
+    const maxLat = Math.max(...lats);
+    const minLon = Math.min(...lons);
+    const maxLon = Math.max(...lons);
+    // The route must occupy roughly the top half, so the visible latitude span
+    // needs to be ~2x the route span (route in top half + margin below). Add a
+    // small extra margin factor so it isn't flush against the edges.
+    const rawLatSpan = maxLat - minLat;
+    const rawLonSpan = maxLon - minLon;
+    const latDelta = Math.max(0.01, rawLatSpan * 2.3 + 0.004);
+    const lonDelta = Math.max(0.01, rawLonSpan * 1.4 + 0.004);
+    const routeCenterLat = (minLat + maxLat) / 2;
+    // Shift the map center south so the route's center lands in the middle of
+    // the TOP half of the viewport (i.e. ~a quarter of the viewport above the
+    // real vertical center).
     setRegion({
-      latitude: first.latitude,
-      longitude: first.longitude,
-      latitudeDelta: 0.012,
-      longitudeDelta: 0.012,
+      latitude: routeCenterLat - latDelta * 0.25,
+      longitude: (minLon + maxLon) / 2,
+      latitudeDelta: latDelta,
+      longitudeDelta: lonDelta,
     });
   }, []);
 
+  /** Fit the camera so an explicit set of coordinates (e.g. a drawn route)
+   *  fits within the TOP HALF of the screen with a small margin. */
+  const zoomToCoords = useCallback(
+    (coords: { latitude: number; longitude: number }[]) => {
+      const valid = coords.filter((c) => c.latitude !== 0 || c.longitude !== 0);
+      if (valid.length < 2) {
+        zoomToFirstStop();
+        return;
+      }
+      suppressFitRef.current = true;
+      const lats = valid.map((c) => c.latitude);
+      const lons = valid.map((c) => c.longitude);
+      const minLat = Math.min(...lats);
+      const maxLat = Math.max(...lats);
+      const minLon = Math.min(...lons);
+      const maxLon = Math.max(...lons);
+      const latDelta = Math.max(0.01, (maxLat - minLat) * 2.3 + 0.004);
+      const lonDelta = Math.max(0.01, (maxLon - minLon) * 1.4 + 0.004);
+      setRegion({
+        latitude: (minLat + maxLat) / 2 - latDelta * 0.25,
+        longitude: (minLon + maxLon) / 2,
+        latitudeDelta: latDelta,
+        longitudeDelta: lonDelta,
+      });
+    },
+    [zoomToFirstStop],
+  );
+
+  /** Open search in "stop" mode pre-loaded with the given stop id so the
+   *  user can replace it with a new location. */
   const handleEditStop = useCallback((stopId: string) => {
     setEditingStopId(stopId);
     setSearchMode('stop');
@@ -765,8 +829,8 @@ export default function Home() {
       setDrawing(false);
       // Half-open the planner so both the map and the point list are visible.
       setPlannerStage('half');
-      // Focus the camera on the first (start) point of the route.
-      zoomToFirstStop();
+      // Fit the drawn route within the top half of the screen.
+      zoomToCoords(matched.coordinates);
 
       // Offer two ways to finish the connector from the drawing end to the
       // destination: a possibly-U-turning shortest route vs a straight-ahead
@@ -849,8 +913,8 @@ export default function Home() {
     setInitialStrokes(undefined);
     // Half-open the planner so both the map and the point list are visible.
     setPlannerStage('half');
-    // Focus the camera on the first (start) point of the route.
-    zoomToFirstStop();
+    // Fit the whole drawn route within the top half of the screen.
+    zoomToCoords(matched.coordinates);
   };
 
   const finalizeMatched = async (matched: MatchedRoute) => {
@@ -892,12 +956,7 @@ export default function Home() {
   ) => {
     setDrawProcessing(true);
     try {
-      const matched = await matchDrawnRoute(
-        coords,
-        mode,
-        undefined,
-        region.latitudeDelta,
-      );
+      const matched = await matchDrawnRoute(coords, mode);
       await maybePromptThenApply(matched, [coords]);
     } catch {
       Alert.alert('Ошибка', 'Не удалось построить маршрут по рисунку');
@@ -911,12 +970,7 @@ export default function Home() {
   ) => {
     setDrawProcessing(true);
     try {
-      const matched = await matchDrawnStrokes(
-        strokes,
-        mode,
-        undefined,
-        region.latitudeDelta,
-      );
+      const matched = await matchDrawnStrokes(strokes, mode);
       await maybePromptThenApply(matched, strokes);
     } catch {
       Alert.alert('Ошибка', 'Не удалось построить маршрут по рисунку');
@@ -1224,14 +1278,10 @@ export default function Home() {
         </SafeAreaView>
       ) : null}
 
-      {/* Persistent top button — re-enter draw editor. Shown ONLY when the
-          point-selector sheet is fully collapsed (map is full-screen); when
-          the sheet is at half or full, the in-sheet button is used instead. */}
-      {drawnRoutes.length > 0 &&
-      !drawing &&
-      !navigating &&
-      !ambiguity &&
-      (!plannerVisible || plannerStage === 'collapsed') ? (
+      {/* Persistent top button — re-enter draw editor. Shown centered at the
+          top whenever the user is in point selection (a drawn override
+          exists and we're not drawing / navigating). */}
+      {drawnRoutes.length > 0 && !drawing && !navigating && !ambiguity ? (
         <SafeAreaView
           edges={['top']}
           pointerEvents="box-none"
@@ -1372,7 +1422,6 @@ export default function Home() {
           onAddStop={openStopSearch}
           onDrawForStop={handleDrawForStop}
           onEditStop={handleEditStop}
-          onEditDrawnRoute={handleEditDrawnRoute}
         />
       ) : null}
 

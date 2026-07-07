@@ -504,44 +504,25 @@ export interface MatchedRoute {
  *
  * Behaviour depends on how densely the user drew:
  *
- * - **Sparse / low-zoom drawing** (wide gaps between raw points): the user
- *   is sketching a general direction and expects the AI to pick sensible
- *   major roads. We resample to a smaller number of waypoints and use a
- *   generous radius (OSRM will snap each waypoint to the nearest road,
- *   which at low zoom tends to be a main road).
+ * - **Sparse / coarse sketch** (wide gaps between raw points): the user is
+ *   sketching a general direction and expects sensible main roads. We resample
+ *   to fewer waypoints and use a generous radius (OSRM snaps each waypoint to
+ *   the nearest road, which tends to be a main road) and run an extra
+ *   road-snapping pass to eliminate stray alley dips.
  *
- * - **Dense / high-zoom drawing** (tight gaps between points): the user is
+ * - **Dense / fine tracing** (tight gaps between points): the user is
  *   deliberately tracing a small road or footpath. We resample to more
- *   waypoints and use a tight radius so OSRM has to follow the drawing
- *   closely, including minor alleys / trails.
+ *   waypoints and use a tight radius so OSRM follows the drawing closely,
+ *   including minor alleys / trails.
  */
 export async function matchDrawnRoute(
   points: { latitude: number; longitude: number }[],
   mode: TransportMode,
   signal?: AbortSignal,
-  /** Map latitudeDelta at draw time. Larger = more zoomed out = bias toward
-   *  bigger roads (only dip into small streets when necessary). */
-  zoomDelta?: number,
 ): Promise<MatchedRoute> {
   if (points.length < 2) {
     return { coordinates: points, distanceMeters: 0, durationSeconds: 0 };
   }
-
-  // Zoom bias. latitudeDelta ≈ visible latitude span in degrees.
-  //   < 0.015  → very zoomed in  → allow small streets / alleys
-  //   0.015–0.05 → medium        → normal roads
-  //   0.05–0.15 → zoomed out      → prefer big roads
-  //   > 0.15   → very zoomed out  → highways / major roads only
-  const zoom: 'alley' | 'street' | 'road' | 'highway' =
-    zoomDelta == null
-      ? 'street'
-      : zoomDelta < 0.015
-        ? 'alley'
-        : zoomDelta < 0.05
-          ? 'street'
-          : zoomDelta < 0.15
-            ? 'road'
-            : 'highway';
 
   // 1) Drop near-duplicate samples (within 5 m). Noisy raw input causes
   //    OSRM /match to hop into side streets for one sample and back.
@@ -568,25 +549,16 @@ export async function matchDrawnRoute(
     };
   }
   const avgSpacing = totalLen / Math.max(1, cleaned.length - 1);
-  // "Fine" = user zoomed in and traced a small street/path deliberately.
-  // Only honour fine tracing when the map is actually zoomed in — at wide
-  // zoom the same finger movement covers big roads, so never treat it as fine.
-  const fine = avgSpacing < 12 && (zoom === 'alley' || zoom === 'street');
+  // "Fine" = the user zoomed in and deliberately traced a small street/path
+  // (tight point spacing). Coarse = a general sketch that should snap to the
+  // sensible main roads.
+  const fine = avgSpacing < 12;
 
   // 2) Resample with a MINIMUM spacing — never place waypoints closer than
   //    this. Waypoints closer than that let OSRM justify a brief detour that
-  //    comes right back. Bigger step at wider zoom = fewer anchors = the
-  //    router is free to follow the big roads that are visible on the map.
-  const minStep =
-    zoom === 'alley'
-      ? 30
-      : zoom === 'street'
-        ? fine
-          ? 35
-          : 80
-        : zoom === 'road'
-          ? 160
-          : 300; // highway
+  //    comes right back. A larger step for coarse sketches gives the router
+  //    freedom to follow the main roads.
+  const minStep = fine ? 35 : 90;
   const targetCount = Math.max(
     2,
     Math.min(80, Math.round(totalLen / minStep) + 1),
@@ -599,20 +571,11 @@ export async function matchDrawnRoute(
   const profile = OSRM_PROFILES[mode];
 
   // --- Primary: OSRM /match ------------------------------------------------
-  // `radiuses` per-point controls how far OSRM may snap each sample. A larger
-  // radius at wider zoom lets OSRM snap each anchor to the nearest MAJOR road
-  // (small alleys get ignored unless they're the only way through); a tight
-  // radius when zoomed in keeps the line on the small road the user traced.
-  const matchRadius =
-    zoom === 'alley'
-      ? 20
-      : zoom === 'street'
-        ? fine
-          ? 25
-          : 75
-        : zoom === 'road'
-          ? 140
-          : 260; // highway
+  // `radiuses` per-point controls how far OSRM may snap each sample. A tight
+  // radius for fine tracing keeps the line on the small road the user traced;
+  // a wider radius for coarse sketches lets OSRM snap each anchor to the
+  // nearest main road.
+  const matchRadius = fine ? 25 : 80;
   try {
     const coordsStr = resampled
       .map((p) => `${p.longitude},${p.latitude}`)
@@ -907,7 +870,6 @@ export async function matchDrawnStrokes(
   strokes: { latitude: number; longitude: number }[][],
   mode: TransportMode,
   signal?: AbortSignal,
-  zoomDelta?: number,
 ): Promise<MatchedRoute> {
   // Keep only strokes that actually have ≥ 2 points.
   const usable = strokes.filter((s) => s.length >= 2);
@@ -915,7 +877,7 @@ export async function matchDrawnStrokes(
     return { coordinates: [], distanceMeters: 0, durationSeconds: 0 };
   }
   if (usable.length === 1) {
-    return matchDrawnRoute(usable[0], mode, signal, zoomDelta);
+    return matchDrawnRoute(usable[0], mode, signal);
   }
 
   const profile = OSRM_PROFILES[mode];
@@ -924,7 +886,7 @@ export async function matchDrawnStrokes(
   // 1) Snap each stroke to roads independently.
   const matchedStrokes: MatchedRoute[] = [];
   for (const stroke of usable) {
-    const m = await matchDrawnRoute(stroke, mode, signal, zoomDelta);
+    const m = await matchDrawnRoute(stroke, mode, signal);
     if (m.coordinates.length >= 2) matchedStrokes.push(m);
   }
   if (matchedStrokes.length === 0) {

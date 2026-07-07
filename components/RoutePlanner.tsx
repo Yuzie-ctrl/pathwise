@@ -86,8 +86,6 @@ interface RoutePlannerProps {
   onDrawForStop?: (stopId: string) => void;
   /** Re-open search to replace an existing stop (idx>=1). */
   onEditStop?: (stopId: string) => void;
-  /** Re-open the draw canvas with existing drawn route(s) preloaded. */
-  onEditDrawnRoute?: () => void;
 }
 
 export function RoutePlanner({
@@ -99,7 +97,6 @@ export function RoutePlanner({
   onAddStop,
   onDrawForStop,
   onEditStop,
-  onEditDrawnRoute,
 }: RoutePlannerProps) {
   const stops = useTripStore((s) => s.stops);
   const mode = useTripStore((s) => s.mode);
@@ -601,21 +598,6 @@ export function RoutePlanner({
                 {stops.length <= 1 ? 'Добавить точку' : 'Добавить остановку'}
               </Text>
             </Pressable>
-
-            {/* Edit drawn route — only when at least one drawn override exists */}
-            {drawnRoutes.length > 0 && onEditDrawnRoute ? (
-              <Pressable
-                onPress={onEditDrawnRoute}
-                className="mx-4 mt-2 flex-row items-center gap-3 rounded-2xl border border-dashed border-pink-300 bg-pink-50 px-4 py-3 active:opacity-80 dark:border-pink-500/40 dark:bg-pink-500/10"
-              >
-                <View className="h-7 w-7 items-center justify-center rounded-full bg-pink-500">
-                  <Brush size={16} color="#fff" />
-                </View>
-                <Text className="text-sm font-medium text-pink-700 dark:text-pink-300">
-                  Изменить нарисованный маршрут
-                </Text>
-              </Pressable>
-            ) : null}
           </ScrollView>
 
           {/* Start trip CTA */}
