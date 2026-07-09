@@ -18,9 +18,12 @@ import MapView, {
 } from '@/components/MapView';
 import { DrawCanvas } from '@/components/DrawCanvas';
 import { AmbiguityPrompt } from '@/components/AmbiguityPrompt';
+import { DestinationPreviewBar } from '@/components/DestinationPreviewBar';
 import { MallSheet } from '@/components/MallSheet';
 import { NavigationBar } from '@/components/NavigationBar';
 import { RoutePlanner, type SheetStage } from '@/components/RoutePlanner';
+import { SavedPlaceEditor } from '@/components/SavedPlaceEditor';
+import { SavedPlacesRow } from '@/components/SavedPlacesRow';
 import { SearchSheet } from '@/components/SearchSheet';
 import { TransitPlanner } from '@/components/TransitPlanner';
 import { TransportScheduleSheet } from '@/components/TransportScheduleSheet';
@@ -44,6 +47,12 @@ import {
 } from '@/lib/routing';
 import { MALLS, type Mall } from '@/lib/malls';
 import { useTripStore, type TransportMode } from '@/lib/stores/tripStore';
+import {
+  isPlaceSet,
+  useSavedPlaces,
+  type SavedPlace,
+  type SavedPlaceIcon,
+} from '@/lib/stores/savedPlacesStore';
 
 const STOP_COLORS: ('green' | 'red' | 'orange' | 'purple' | 'cyan' | 'blue')[] =
   ['green', 'red', 'orange', 'purple', 'cyan', 'blue'];
@@ -111,6 +120,26 @@ export default function Home() {
   const [scheduleOpen, setScheduleOpen] = useState(false);
   /** Stop id the user is actively editing via search-sheet replace flow. */
   const [editingStopId, setEditingStopId] = useState<string | null>(null);
+  /**
+   * A place chosen from the main search (or a set favorite) that is being
+   * previewed on the map with a labeled marker + "В путь!" bar, before the
+   * point selection opens.
+   */
+  const [pendingDestination, setPendingDestination] =
+    useState<GeocodeResult | null>(null);
+  /**
+   * Saved-place editor session. `place` is the slot being edited (null for a
+   * brand-new custom favorite); `creating` requires name + icon input.
+   */
+  const [placeEditor, setPlaceEditor] = useState<{
+    place: SavedPlace | null;
+    creating: boolean;
+  } | null>(null);
+
+  const setPlaceLocation = useSavedPlaces((s) => s.setPlaceLocation);
+  const addCustomPlace = useSavedPlaces((s) => s.addCustomPlace);
+  const updatePlace = useSavedPlaces((s) => s.updatePlace);
+  const removePlace = useSavedPlaces((s) => s.removePlace);
 
   /**
    * Ambiguity ("which route is better?") session. When non-null, the matched
@@ -570,6 +599,21 @@ export default function Home() {
         });
       });
     }
+    // Previewed destination (from search or a set favorite) — a labeled pin.
+    if (pendingDestination && !navigating) {
+      const labelBadge = `<div style="pointer-events:none;display:flex;flex-direction:column;align-items:center;gap:2px">
+  <div style="max-width:180px;padding:4px 10px;border-radius:14px;background:#2563eb;color:#fff;font-size:12px;font-weight:700;box-shadow:0 2px 6px rgba(0,0,0,0.35);border:2px solid #fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${pendingDestination.shortName.replace(/</g, '&lt;')}</div>
+  <div style="width:14px;height:14px;border-radius:9999px;background:#2563eb;border:3px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.35)"></div>
+</div>`;
+      out.push({
+        id: 'pending-destination',
+        coordinate: {
+          latitude: pendingDestination.latitude,
+          longitude: pendingDestination.longitude,
+        },
+        badgeHtml: labelBadge,
+      });
+    }
     return out;
   }, [
     stops,
@@ -581,6 +625,7 @@ export default function Home() {
     drawTargetStopId,
     navigating,
     mallsVisible,
+    pendingDestination,
   ]);
 
   // ---------------------------------------------------------------------
@@ -636,9 +681,16 @@ export default function Home() {
       setSearchMode(null);
       return;
     }
-    // Destination flow from the main screen: this is the very first
-    // destination the user is planning → default to walking mode so the
-    // freshly-opened planner lands on "Пешком" automatically.
+    // Destination flow from the main screen: instead of jumping straight into
+    // point selection, show the place on the map with a labeled marker and a
+    // "В путь!" bar. Committing (В путь!) opens the point selection.
+    setPendingDestination(r);
+    setSearchMode(null);
+    centerOnPlace(r.latitude, r.longitude);
+  };
+
+  /** Commit the previewed destination → build the trip and open the planner. */
+  const commitDestination = (r: GeocodeResult) => {
     const isFirstDestination = stops.length === 0;
     ensureOriginFromUser();
     addStop({
@@ -650,10 +702,84 @@ export default function Home() {
     if (isFirstDestination) {
       useTripStore.getState().setMode('walking');
     }
-    setSearchMode(null);
+    setPendingDestination(null);
     setPlannerStage('half');
     // Zoom the map in on the first (start) point of the route.
     zoomToFirstStop();
+  };
+
+  // ---------------------------------------------------------------------
+  // Saved places
+  // ---------------------------------------------------------------------
+  /** Tap a saved-place chip. If it has an address → preview it on the map with
+   *  a "В путь!" bar. If unset → open the editor so the user can assign one. */
+  const handleSavedPlacePress = (place: SavedPlace) => {
+    if (isPlaceSet(place)) {
+      const r: GeocodeResult = {
+        displayName: place.displayName || place.name,
+        shortName: place.name,
+        latitude: place.latitude as number,
+        longitude: place.longitude as number,
+      };
+      setPendingDestination(r);
+      centerOnPlace(r.latitude, r.longitude);
+    } else {
+      setPlaceEditor({ place, creating: false });
+    }
+  };
+
+  /** Long-press a saved-place chip → open the editor (change address/name/icon). */
+  const handleSavedPlaceEdit = (place: SavedPlace) => {
+    setPlaceEditor({ place, creating: false });
+  };
+
+  /** Tap the "+ Любимые" chip → create a new custom favorite. */
+  const handleAddSavedPlace = () => {
+    setPlaceEditor({ place: null, creating: true });
+  };
+
+  /** Live preview inside the editor — pan/zoom the (dimmed) map to the pick. */
+  const handleEditorPreview = (r: GeocodeResult) => {
+    centerOnPlace(r.latitude, r.longitude);
+  };
+
+  /** Commit changes from the editor. */
+  const handleEditorSave = (data: {
+    name: string;
+    icon: SavedPlaceIcon;
+    location: GeocodeResult;
+  }) => {
+    if (!placeEditor) return;
+    if (placeEditor.creating || !placeEditor.place) {
+      addCustomPlace({
+        name: data.name,
+        icon: data.icon,
+        displayName: data.location.displayName,
+        latitude: data.location.latitude,
+        longitude: data.location.longitude,
+      });
+    } else {
+      const p = placeEditor.place;
+      if (p.kind === 'custom') {
+        updatePlace(p.id, { name: data.name, icon: data.icon });
+      }
+      setPlaceLocation(p.id, {
+        displayName: data.location.displayName,
+        latitude: data.location.latitude,
+        longitude: data.location.longitude,
+      });
+    }
+    setPlaceEditor(null);
+  };
+
+  /** Remove the place being edited. */
+  const handleEditorRemove = () => {
+    if (!placeEditor?.place) {
+      setPlaceEditor(null);
+      return;
+    }
+    removePlace(placeEditor.place.id);
+    setPlaceEditor(null);
   };
 
   /** Animate the camera so the ENTIRE route is visible within the TOP HALF of
@@ -731,6 +857,17 @@ export default function Home() {
     },
     [zoomToFirstStop],
   );
+
+  /** Center the map on a point with a medium (close) zoom, point dead-center. */
+  const centerOnPlace = useCallback((lat: number, lon: number) => {
+    suppressFitRef.current = true;
+    setRegion({
+      latitude: lat,
+      longitude: lon,
+      latitudeDelta: 0.01,
+      longitudeDelta: 0.01,
+    });
+  }, []);
 
   /** Open search in "stop" mode pre-loaded with the given stop id so the
    *  user can replace it with a new location. */
@@ -1209,14 +1346,25 @@ export default function Home() {
   // Hide top "Куда едем?" bar once user has picked at least one destination
   // (i.e. a trip is being planned).
   const showTopSearchBar =
-    !drawing && !navigating && !ambiguity && !postChooser && stops.length === 0;
+    !drawing &&
+    !navigating &&
+    !ambiguity &&
+    !postChooser &&
+    !pendingDestination &&
+    !placeEditor &&
+    stops.length === 0;
   // Brush is only available when no trip is being planned yet OR planner isn't collapsed.
   const showBrush =
     !drawing &&
     !navigating &&
     !ambiguity &&
     !postChooser &&
+    !pendingDestination &&
     (stops.length === 0 || plannerStage !== 'collapsed');
+  /** True while the map controls should render as a top-right column: either on
+   *  the fresh main screen or while picking points (planner/transit open). */
+  const showMapControls =
+    !drawing && !ambiguity && !postChooser && !navigating && !placeEditor;
 
   return (
     <View style={{ flex: 1 }} className="bg-background">
@@ -1275,6 +1423,14 @@ export default function Home() {
               </Pressable>
             </View>
           </View>
+          {/* Saved places row (Дом, Работа, любимые, +) */}
+          <View className="pt-2">
+            <SavedPlacesRow
+              onPressPlace={handleSavedPlacePress}
+              onEditPlace={handleSavedPlaceEdit}
+              onAddPlace={handleAddSavedPlace}
+            />
+          </View>
         </SafeAreaView>
       ) : null}
 
@@ -1319,73 +1475,57 @@ export default function Home() {
         />
       ) : null}
 
-      {/* Floating controls (right side) */}
-      {!drawing && !ambiguity && !postChooser ? (
+      {/* Floating map controls — always a top-right column. On the main screen
+          they sit below the search bar + saved-places row; while picking points
+          they sit at the very top-right. Order: гео, видимость ТЦ, нарисовать. */}
+      {showMapControls ? (
         <SafeAreaView
           edges={['top']}
           pointerEvents="box-none"
-          style={{
-            position: 'absolute',
-            right: 0,
-            left: 0,
-            top: selectedTransitOption ? 0 : undefined,
-            bottom: selectedTransitOption ? undefined : 0,
-          }}
+          style={{ position: 'absolute', left: 0, right: 0, top: 0 }}
         >
           <View
             className="absolute right-4"
-            style={{
-              top: selectedTransitOption ? 8 : undefined,
-              bottom: selectedTransitOption
-                ? undefined
-                : plannerVisible && plannerStage === 'full'
-                  ? 360
-                  : plannerVisible && plannerStage === 'half'
-                    ? 360
-                    : plannerVisible && plannerStage === 'collapsed'
-                      ? 140
-                      : 40,
-            }}
+            style={{ top: showTopSearchBar ? 132 : 8 }}
             pointerEvents="box-none"
           >
-            {showBrush && !selectedTransitOption ? (
+            <Pressable
+              onPress={locate}
+              className="mb-3 h-12 w-12 items-center justify-center rounded-full bg-card"
+              style={{
+                shadowColor: '#000',
+                shadowOffset: { width: 0, height: 2 },
+                shadowOpacity: 0.18,
+                shadowRadius: 6,
+                elevation: 6,
+              }}
+            >
+              {locating ? (
+                <ActivityIndicator size="small" />
+              ) : (
+                <Locate size={22} color="#2563eb" />
+              )}
+            </Pressable>
+            <Pressable
+              onPress={() => setMallsVisible((v) => !v)}
+              className="mb-3 h-12 w-12 items-center justify-center rounded-full bg-card"
+              style={{
+                shadowColor: '#000',
+                shadowOffset: { width: 0, height: 2 },
+                shadowOpacity: 0.18,
+                shadowRadius: 6,
+                elevation: 6,
+              }}
+            >
+              {mallsVisible ? (
+                <Eye size={20} color="#2563eb" />
+              ) : (
+                <EyeOff size={20} color="#6b7280" />
+              )}
+            </Pressable>
+            {showBrush ? (
               <Pressable
                 onPress={() => setDrawing(true)}
-                className="mb-3 h-12 w-12 items-center justify-center rounded-full bg-card"
-                style={{
-                  shadowColor: '#000',
-                  shadowOffset: { width: 0, height: 2 },
-                  shadowOpacity: 0.18,
-                  shadowRadius: 6,
-                  elevation: 6,
-                }}
-              >
-                <Brush size={20} color="#2563eb" />
-              </Pressable>
-            ) : null}
-            {/* Mall visibility toggle — always available while the map is shown */}
-            {!navigating ? (
-              <Pressable
-                onPress={() => setMallsVisible((v) => !v)}
-                className="mb-3 h-12 w-12 items-center justify-center rounded-full bg-card"
-                style={{
-                  shadowColor: '#000',
-                  shadowOffset: { width: 0, height: 2 },
-                  shadowOpacity: 0.18,
-                  shadowRadius: 6,
-                  elevation: 6,
-                }}
-              >
-                {mallsVisible ? (
-                  <Eye size={20} color="#2563eb" />
-                ) : (
-                  <EyeOff size={20} color="#6b7280" />
-                )}
-              </Pressable>
-            ) : null}
-            {!navigating ? (
-              <Pressable
-                onPress={locate}
                 className="h-12 w-12 items-center justify-center rounded-full bg-card"
                 style={{
                   shadowColor: '#000',
@@ -1395,11 +1535,7 @@ export default function Home() {
                   elevation: 6,
                 }}
               >
-                {locating ? (
-                  <ActivityIndicator size="small" />
-                ) : (
-                  <Locate size={22} color="#2563eb" />
-                )}
+                <Brush size={20} color="#2563eb" />
               </Pressable>
             ) : null}
           </View>
@@ -1558,6 +1694,38 @@ export default function Home() {
             </View>
           </SafeAreaView>
         </>
+      ) : null}
+
+      {/* Destination preview — labeled marker + "В путь!" (from search or a set
+          favorite). Committing opens the point selection. */}
+      {pendingDestination &&
+      !navigating &&
+      !drawing &&
+      !ambiguity &&
+      !postChooser &&
+      !placeEditor ? (
+        <DestinationPreviewBar
+          label={pendingDestination.shortName}
+          detail={
+            pendingDestination.displayName !== pendingDestination.shortName
+              ? pendingDestination.displayName
+              : undefined
+          }
+          onGo={() => commitDestination(pendingDestination)}
+          onCancel={() => setPendingDestination(null)}
+        />
+      ) : null}
+
+      {/* Saved-place editor (assign / edit address, name, icon) */}
+      {placeEditor ? (
+        <SavedPlaceEditor
+          place={placeEditor.place}
+          creating={placeEditor.creating}
+          onPreviewLocation={handleEditorPreview}
+          onSave={handleEditorSave}
+          onRemove={handleEditorRemove}
+          onClose={() => setPlaceEditor(null)}
+        />
       ) : null}
 
       {/* Global search sheet */}
