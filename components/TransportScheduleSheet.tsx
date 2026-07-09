@@ -58,6 +58,8 @@ import { useTransportFavorites } from '@/lib/stores/transportFavoritesStore';
 interface Props {
   visible: boolean;
   onClose: () => void;
+  /** When provided, open directly to this view instead of the home screen. */
+  initialView?: ScheduleView;
 }
 
 // ---------------------------------------------------------------------------
@@ -136,13 +138,19 @@ function VehicleIcon({ kind }: { kind: TransportRoute['vehicle_kind'] }) {
 // ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
-export function TransportScheduleSheet({ visible, onClose }: Props) {
-  const [view, setView] = useState<ScheduleView>({ kind: 'home' });
+export function TransportScheduleSheet({
+  visible,
+  onClose,
+  initialView,
+}: Props) {
+  const [view, setView] = useState<ScheduleView>(
+    initialView ?? { kind: 'home' },
+  );
 
   // Reset whenever the sheet is re-opened
   useEffect(() => {
-    if (visible) setView({ kind: 'home' });
-  }, [visible]);
+    if (visible) setView(initialView ?? { kind: 'home' });
+  }, [visible, initialView]);
 
   const back = useCallback(() => {
     setView((v) => {

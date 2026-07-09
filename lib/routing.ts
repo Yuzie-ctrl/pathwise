@@ -1272,6 +1272,14 @@ export interface TransitSegment {
   fromCoord?: { latitude: number; longitude: number };
   /** Geo coordinate of the alighting (bus) stop, when known (GTFS). */
   toCoord?: { latitude: number; longitude: number };
+  /** GTFS route id for this ride (bus/tram/etc.), when known. */
+  routeId?: string;
+  /** GTFS trip id realising this ride, when known. */
+  tripId?: string;
+  /** GTFS stop id of the boarding stop, when known. */
+  fromStopId?: string;
+  /** GTFS stop id of the alighting stop, when known. */
+  toStopId?: string;
 }
 
 export interface TransitOption {
@@ -1569,6 +1577,10 @@ export function buildTransitOptionsFromGtfs(
         ride.toStop.latitude != null && ride.toStop.longitude != null
           ? { latitude: ride.toStop.latitude, longitude: ride.toStop.longitude }
           : undefined,
+      routeId: ride.route.id,
+      tripId: ride.trip.id,
+      fromStopId: ride.fromStop.id,
+      toStopId: ride.toStop.id,
     });
     // Insert dwells from via-stops (they represent user-configured pauses at
     // the destination side of the ride — displayed as non-counted pause rows).

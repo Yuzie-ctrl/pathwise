@@ -44,6 +44,7 @@ import {
   type PostConnectorVariants,
   type RouteAmbiguity,
   type TransitOption,
+  type TransitSegment,
 } from '@/lib/routing';
 import { MALLS, type Mall } from '@/lib/malls';
 import { useTripStore, type TransportMode } from '@/lib/stores/tripStore';
@@ -118,6 +119,17 @@ export default function Home() {
   const [mallsVisible, setMallsVisible] = useState(true);
   /** Transport-schedule sheet — opened via calendar button on main screen. */
   const [scheduleOpen, setScheduleOpen] = useState(false);
+  /** When set, the transport-schedule sheet opens directly to this view. */
+  const [scheduleInitialView, setScheduleInitialView] = useState<
+    | {
+        kind: 'stopDetail';
+        stopId: string;
+        routeId?: string;
+        tripId?: string;
+        serviceDay: 'weekday' | 'saturday' | 'sunday';
+      }
+    | undefined
+  >(undefined);
   /** Stop id the user is actively editing via search-sheet replace flow. */
   const [editingStopId, setEditingStopId] = useState<string | null>(null);
   /**
@@ -135,11 +147,16 @@ export default function Home() {
     place: SavedPlace | null;
     creating: boolean;
   } | null>(null);
+  /** Live marker for the address currently previewed inside the editor. */
+  const [editorPreview, setEditorPreview] = useState<GeocodeResult | null>(
+    null,
+  );
 
   const setPlaceLocation = useSavedPlaces((s) => s.setPlaceLocation);
   const addCustomPlace = useSavedPlaces((s) => s.addCustomPlace);
   const updatePlace = useSavedPlaces((s) => s.updatePlace);
   const removePlace = useSavedPlaces((s) => s.removePlace);
+  const recordRecent = useSavedPlaces((s) => s.recordRecent);
 
   /**
    * Ambiguity ("which route is better?") session. When non-null, the matched
@@ -614,6 +631,22 @@ export default function Home() {
         badgeHtml: labelBadge,
       });
     }
+    // Editor preview — a labeled pin for the address being picked in the
+    // saved-place editor (so the chosen spot is visibly marked on the map).
+    if (editorPreview) {
+      const previewBadge = `<div style="pointer-events:none;display:flex;flex-direction:column;align-items:center;gap:2px">
+  <div style="max-width:180px;padding:4px 10px;border-radius:14px;background:#2563eb;color:#fff;font-size:12px;font-weight:700;box-shadow:0 2px 6px rgba(0,0,0,0.35);border:2px solid #fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${editorPreview.shortName.replace(/</g, '&lt;')}</div>
+  <div style="width:14px;height:14px;border-radius:9999px;background:#2563eb;border:3px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.35)"></div>
+</div>`;
+      out.push({
+        id: 'editor-preview',
+        coordinate: {
+          latitude: editorPreview.latitude,
+          longitude: editorPreview.longitude,
+        },
+        badgeHtml: previewBadge,
+      });
+    }
     return out;
   }, [
     stops,
@@ -626,6 +659,7 @@ export default function Home() {
     navigating,
     mallsVisible,
     pendingDestination,
+    editorPreview,
   ]);
 
   // ---------------------------------------------------------------------
@@ -702,6 +736,12 @@ export default function Home() {
     if (isFirstDestination) {
       useTripStore.getState().setMode('walking');
     }
+    recordRecent({
+      displayName: r.displayName,
+      shortName: r.shortName,
+      latitude: r.latitude,
+      longitude: r.longitude,
+    });
     setPendingDestination(null);
     setPlannerStage('half');
     // Zoom the map in on the first (start) point of the route.
@@ -724,22 +764,36 @@ export default function Home() {
       setPendingDestination(r);
       centerOnPlace(r.latitude, r.longitude);
     } else {
+      setEditorPreview(null);
       setPlaceEditor({ place, creating: false });
     }
   };
 
   /** Long-press a saved-place chip → open the editor (change address/name/icon). */
   const handleSavedPlaceEdit = (place: SavedPlace) => {
+    setEditorPreview(
+      isPlaceSet(place)
+        ? {
+            displayName: place.displayName || place.name,
+            shortName: place.name,
+            latitude: place.latitude as number,
+            longitude: place.longitude as number,
+          }
+        : null,
+    );
     setPlaceEditor({ place, creating: false });
   };
 
   /** Tap the "+ Любимые" chip → create a new custom favorite. */
   const handleAddSavedPlace = () => {
+    setEditorPreview(null);
     setPlaceEditor({ place: null, creating: true });
   };
 
-  /** Live preview inside the editor — pan/zoom the (dimmed) map to the pick. */
+  /** Live preview inside the editor — pan/zoom the (dimmed) map to the pick
+   *  and drop a marker so the chosen spot is visible behind the scrim. */
   const handleEditorPreview = (r: GeocodeResult) => {
+    setEditorPreview(r);
     centerOnPlace(r.latitude, r.longitude);
   };
 
@@ -747,6 +801,7 @@ export default function Home() {
   const handleEditorSave = (data: {
     name: string;
     icon: SavedPlaceIcon;
+    iconColor: string;
     location: GeocodeResult;
   }) => {
     if (!placeEditor) return;
@@ -754,6 +809,7 @@ export default function Home() {
       addCustomPlace({
         name: data.name,
         icon: data.icon,
+        iconColor: data.iconColor,
         displayName: data.location.displayName,
         latitude: data.location.latitude,
         longitude: data.location.longitude,
@@ -761,7 +817,11 @@ export default function Home() {
     } else {
       const p = placeEditor.place;
       if (p.kind === 'custom') {
-        updatePlace(p.id, { name: data.name, icon: data.icon });
+        updatePlace(p.id, {
+          name: data.name,
+          icon: data.icon,
+          iconColor: data.iconColor,
+        });
       }
       setPlaceLocation(p.id, {
         displayName: data.location.displayName,
@@ -769,6 +829,15 @@ export default function Home() {
         longitude: data.location.longitude,
       });
     }
+    recordRecent({
+      displayName: data.location.displayName,
+      shortName: data.location.shortName,
+      latitude: data.location.latitude,
+      longitude: data.location.longitude,
+    });
+    // Close the editor (removes the dimming scrim) and clear the preview
+    // marker so the map is fully interactive again after "Выбрать".
+    setEditorPreview(null);
     setPlaceEditor(null);
   };
 
@@ -779,6 +848,7 @@ export default function Home() {
       return;
     }
     removePlace(placeEditor.place.id);
+    setEditorPreview(null);
     setPlaceEditor(null);
   };
 
@@ -1241,6 +1311,23 @@ export default function Home() {
     [setLegs],
   );
 
+  /** Open the transport-schedule sheet directly at a specific bus's schedule
+   *  for a specific boarding stop (from the transit detail timeline). */
+  const handleOpenBusSchedule = useCallback((seg: TransitSegment) => {
+    if (!seg.fromStopId) return;
+    const d = new Date().getDay();
+    const serviceDay: 'weekday' | 'saturday' | 'sunday' =
+      d === 0 ? 'sunday' : d === 6 ? 'saturday' : 'weekday';
+    setScheduleInitialView({
+      kind: 'stopDetail',
+      stopId: seg.fromStopId,
+      routeId: seg.routeId,
+      tripId: seg.tripId,
+      serviceDay,
+    });
+    setScheduleOpen(true);
+  }, []);
+
   /**
    * Zoom the map to a specific segment of the currently-selected transit
    * option. Since transit segments are synthesized from a single car-profile
@@ -1575,6 +1662,7 @@ export default function Home() {
           onDrawForStop={handleDrawForStop}
           onSelectOption={handleSelectTransitOption}
           onZoomToSegment={handleZoomToSegment}
+          onOpenBusSchedule={handleOpenBusSchedule}
           onEditStop={handleEditStop}
           onPeekChange={setTransitPeeking}
         />
@@ -1724,7 +1812,10 @@ export default function Home() {
           onPreviewLocation={handleEditorPreview}
           onSave={handleEditorSave}
           onRemove={handleEditorRemove}
-          onClose={() => setPlaceEditor(null)}
+          onClose={() => {
+            setEditorPreview(null);
+            setPlaceEditor(null);
+          }}
         />
       ) : null}
 
@@ -1759,7 +1850,11 @@ export default function Home() {
       {/* Transport schedule sheet (GTFS-backed Supabase data) */}
       <TransportScheduleSheet
         visible={scheduleOpen}
-        onClose={() => setScheduleOpen(false)}
+        initialView={scheduleInitialView}
+        onClose={() => {
+          setScheduleOpen(false);
+          setScheduleInitialView(undefined);
+        }}
       />
     </View>
   );

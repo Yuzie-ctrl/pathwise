@@ -60,8 +60,7 @@ export function SavedPlacesRow({
         onPress={onAddPlace}
         className="flex-row items-center gap-1.5 bg-card px-3.5 py-2.5"
         style={{
-          borderRadius: 4,
-          transform: [{ skewX: '-8deg' }],
+          borderRadius: 12,
           shadowColor: '#000',
           shadowOffset: { width: 0, height: 2 },
           shadowOpacity: 0.12,
@@ -69,11 +68,9 @@ export function SavedPlacesRow({
           elevation: 4,
         }}
       >
-        <View style={{ transform: [{ skewX: '8deg' }] }}>
-          <View className="flex-row items-center gap-1.5">
-            <Plus size={16} color="#2563eb" />
-            <Text className="text-sm font-semibold text-primary">Любимые</Text>
-          </View>
+        <View className="flex-row items-center gap-1.5">
+          <Plus size={16} color="#2563eb" />
+          <Text className="text-sm font-semibold text-primary">Любимые</Text>
         </View>
       </Pressable>
     </ScrollView>
@@ -89,6 +86,7 @@ interface PlaceChipProps {
 function PlaceChip({ place, onPress, onEdit }: PlaceChipProps) {
   const Icon = SAVED_PLACE_ICON_MAP[place.icon];
   const set = isPlaceSet(place);
+  const iconColor = set ? (place.iconColor ?? '#2563eb') : '#9ca3af';
   const fill = useSharedValue(0);
   const firedRef = useRef(false);
 
@@ -132,8 +130,7 @@ function PlaceChip({ place, onPress, onEdit }: PlaceChipProps) {
       <Animated.View
         className="overflow-hidden bg-card"
         style={{
-          borderRadius: 4,
-          transform: [{ skewX: '-8deg' }],
+          borderRadius: 12,
           shadowColor: '#000',
           shadowOffset: { width: 0, height: 2 },
           shadowOpacity: 0.12,
@@ -147,11 +144,8 @@ function PlaceChip({ place, onPress, onEdit }: PlaceChipProps) {
           className="absolute bottom-0 left-0 top-0 bg-primary/15"
           style={fillStyle}
         />
-        <View
-          className="flex-row items-center gap-2 px-3.5 py-2.5"
-          style={{ transform: [{ skewX: '8deg' }] }}
-        >
-          <Icon size={16} color={set ? '#2563eb' : '#9ca3af'} />
+        <View className="flex-row items-center gap-2 px-3.5 py-2.5">
+          <Icon size={16} color={iconColor} />
           <Text
             className={`text-sm font-semibold ${set ? 'text-foreground' : 'text-muted-foreground'}`}
             numberOfLines={1}

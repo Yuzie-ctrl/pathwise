@@ -10,6 +10,7 @@ import {
   Brush,
   Bus,
   Car,
+  CalendarClock,
   ChevronDown,
   ChevronRight,
   ChevronUp,
@@ -80,6 +81,8 @@ interface TransitPlannerProps {
   onSelectOption?: (option: TransitOption | null) => void;
   /** Zoom the map to a specific segment of the current transit option. */
   onZoomToSegment?: (segmentIndex: number) => void;
+  /** Open the full transport schedule for a specific bus at its boarding stop. */
+  onOpenBusSchedule?: (segment: TransitSegment) => void;
   /** Re-open search to replace an existing stop (idx>=1). */
   onEditStop?: (stopId: string) => void;
   /** Notifies the parent that the planner is "peeked" down so the map can
@@ -100,6 +103,7 @@ export function TransitPlanner({
   onDrawForStop,
   onSelectOption,
   onZoomToSegment,
+  onOpenBusSchedule,
   onEditStop,
   onPeekChange,
 }: TransitPlannerProps) {
@@ -290,6 +294,59 @@ export function TransitPlanner({
     onSelectOption?.(null);
   };
 
+  // ---------------------------------------------------------------------
+  // Earlier / later navigation + faster-alternative detection.
+  // "Signature" groups options that use the same bus lines & transfers, so the
+  // arrows step to the same journey an earlier / later departure.
+  // ---------------------------------------------------------------------
+  const signatureOf = (o: TransitOption) => o.busLines.join('>');
+  /** Total arrival offset (minutes from now) for ranking speed. */
+  const arrivalOffset = (o: TransitOption) =>
+    o.departureInMinutes + Math.round(o.durationSeconds / 60);
+
+  const sameSignatureOptions = useMemo(() => {
+    if (!detailOption) return [];
+    const sig = signatureOf(detailOption);
+    return [...allOptions]
+      .filter((o) => signatureOf(o) === sig)
+      .sort((a, b) => a.departureInMinutes - b.departureInMinutes);
+  }, [detailOption, allOptions]);
+
+  const detailIndex = useMemo(
+    () =>
+      detailOption
+        ? sameSignatureOptions.findIndex((o) => o.id === detailOption.id)
+        : -1,
+    [detailOption, sameSignatureOptions],
+  );
+
+  const earlierOption =
+    detailIndex > 0 ? sameSignatureOptions[detailIndex - 1] : null;
+  const laterOption =
+    detailIndex >= 0 && detailIndex < sameSignatureOptions.length - 1
+      ? sameSignatureOptions[detailIndex + 1]
+      : null;
+
+  /** A meaningfully faster journey using DIFFERENT lines than the current one. */
+  const fasterAlternative = useMemo(() => {
+    if (!detailOption) return null;
+    const sig = signatureOf(detailOption);
+    const mine = arrivalOffset(detailOption);
+    let best: TransitOption | null = null;
+    for (const o of allOptions) {
+      if (signatureOf(o) === sig) continue;
+      const off = arrivalOffset(o);
+      if (off < mine - 2 && (!best || off < arrivalOffset(best))) best = o;
+    }
+    return best;
+  }, [detailOption, allOptions]);
+
+  const shiftDetail = (o: TransitOption | null) => {
+    if (!o) return;
+    setDetailOption(o);
+    onSelectOption?.(o);
+  };
+
   /** X in detail — close the entire transit planner and return to main map. */
   const closeDetailAndPlanner = () => {
     setDetailOption(null);
@@ -329,6 +386,13 @@ export function TransitPlanner({
             setDetailPos('collapsed');
             onZoomToSegment?.(idx);
           }}
+          onOpenBusSchedule={onOpenBusSchedule}
+          hasEarlier={!!earlierOption}
+          hasLater={!!laterOption}
+          onEarlier={() => shiftDetail(earlierOption)}
+          onLater={() => shiftDetail(laterOption)}
+          fasterAlternative={fasterAlternative}
+          onPickFasterAlternative={() => shiftDetail(fasterAlternative)}
           totalDistance={distanceMeters}
         />
       </View>
@@ -904,6 +968,13 @@ interface DetailSheetProps {
   onBack: () => void;
   onClose: () => void;
   onZoomToSegment: (segmentIndex: number) => void;
+  onOpenBusSchedule?: (segment: TransitSegment) => void;
+  hasEarlier: boolean;
+  hasLater: boolean;
+  onEarlier: () => void;
+  onLater: () => void;
+  fasterAlternative: TransitOption | null;
+  onPickFasterAlternative: () => void;
   totalDistance: number;
 }
 
@@ -918,10 +989,20 @@ function DetailSheet({
   onBack,
   onClose,
   onZoomToSegment,
+  onOpenBusSchedule,
+  hasEarlier,
+  hasLater,
+  onEarlier,
+  onLater,
+  fasterAlternative,
+  onPickFasterAlternative,
   totalDistance: _totalDistance,
 }: DetailSheetProps) {
   const topOffset =
     position === 'expanded' ? 60 : position === 'compact' ? '50%' : '85%';
+
+  const [altDismissed, setAltDismissed] = useState(false);
+  const [altOpen, setAltOpen] = useState(false);
 
   // Bus-line pill summary at top (7 › 49 › 8 › walker-minutes) like screenshot
   const pillSummary: { line: string; walk?: number }[] = [];
@@ -933,6 +1014,20 @@ function DetailSheet({
       pillSummary.push({ line: stripNumPrefix(seg.line ?? 'BUS') });
     }
   }
+
+  const showAltBanner = !!fasterAlternative && !altDismissed;
+  const altLines = fasterAlternative
+    ? fasterAlternative.busLines.map(stripNumPrefix).join(' › ')
+    : '';
+  const altSaved = fasterAlternative
+    ? Math.max(
+        1,
+        option.departureInMinutes +
+          Math.round(option.durationSeconds / 60) -
+          (fasterAlternative.departureInMinutes +
+            Math.round(fasterAlternative.durationSeconds / 60)),
+      )
+    : 0;
 
   return (
     <View
@@ -946,6 +1041,69 @@ function DetailSheet({
       }}
       className="overflow-hidden rounded-t-3xl bg-card"
     >
+      {/* Faster-alternative notification — slides in above the sheet header */}
+      {showAltBanner ? (
+        <View
+          className="absolute -top-2 left-3 right-3 z-10 -translate-y-full rounded-2xl bg-primary p-3"
+          style={{
+            shadowColor: '#000',
+            shadowOffset: { width: 0, height: 3 },
+            shadowOpacity: 0.22,
+            shadowRadius: 10,
+            elevation: 10,
+          }}
+        >
+          <View className="flex-row items-start gap-2">
+            <Clock size={16} color="#fff" style={{ marginTop: 1 }} />
+            <View className="flex-1">
+              <Text className="text-sm font-bold text-primary-foreground">
+                Быстрее на {altSaved} мин другим маршрутом
+              </Text>
+              {altOpen ? (
+                <Text className="mt-0.5 text-xs text-primary-foreground/90">
+                  {altLines} · через {fasterAlternative?.departureInMinutes} мин
+                  · в пути{' '}
+                  {formatDuration(fasterAlternative?.durationSeconds ?? 0)}
+                </Text>
+              ) : (
+                <Text className="mt-0.5 text-xs text-primary-foreground/80">
+                  Нажмите, чтобы посмотреть вариант
+                </Text>
+              )}
+              <View className="mt-2 flex-row gap-2">
+                {altOpen ? (
+                  <Pressable
+                    onPress={onPickFasterAlternative}
+                    className="rounded-full bg-white px-3 py-1.5"
+                  >
+                    <Text className="text-xs font-bold text-primary">
+                      Перейти
+                    </Text>
+                  </Pressable>
+                ) : (
+                  <Pressable
+                    onPress={() => setAltOpen(true)}
+                    className="rounded-full bg-white/20 px-3 py-1.5"
+                  >
+                    <Text className="text-xs font-bold text-primary-foreground">
+                      Открыть
+                    </Text>
+                  </Pressable>
+                )}
+                <Pressable
+                  onPress={() => setAltDismissed(true)}
+                  className="rounded-full bg-white/10 px-3 py-1.5"
+                >
+                  <Text className="text-xs font-semibold text-primary-foreground">
+                    Оставить этот
+                  </Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        </View>
+      ) : null}
+
       {/* Grabber */}
       <Pressable
         onPress={onTogglePosition}
@@ -1004,6 +1162,40 @@ function DetailSheet({
         </Pressable>
       </View>
 
+      {/* Earlier / later shift row — same journey, adjacent departure. */}
+      <View className="flex-row items-center gap-2 border-b border-border px-4 py-2">
+        <Pressable
+          onPress={onEarlier}
+          disabled={!hasEarlier}
+          className={`flex-1 flex-row items-center justify-center gap-1 rounded-xl py-2 ${hasEarlier ? 'bg-muted active:bg-muted/70' : 'bg-muted/40'}`}
+        >
+          <ArrowUp size={14} color={hasEarlier ? '#2563eb' : '#bbb'} />
+          <Text
+            className={`text-xs font-semibold ${hasEarlier ? 'text-foreground' : 'text-muted-foreground'}`}
+          >
+            Автобус раньше
+          </Text>
+        </Pressable>
+        <View className="items-center px-1">
+          <Text className="text-[10px] text-muted-foreground">через</Text>
+          <Text className="text-xs font-bold text-foreground">
+            {option.departureInMinutes} мин
+          </Text>
+        </View>
+        <Pressable
+          onPress={onLater}
+          disabled={!hasLater}
+          className={`flex-1 flex-row items-center justify-center gap-1 rounded-xl py-2 ${hasLater ? 'bg-muted active:bg-muted/70' : 'bg-muted/40'}`}
+        >
+          <Text
+            className={`text-xs font-semibold ${hasLater ? 'text-foreground' : 'text-muted-foreground'}`}
+          >
+            Автобус позже
+          </Text>
+          <ArrowDown size={14} color={hasLater ? '#2563eb' : '#bbb'} />
+        </Pressable>
+      </View>
+
       {position !== 'collapsed' ? (
         <ScrollView
           contentContainerStyle={{
@@ -1019,6 +1211,7 @@ function DetailSheet({
             destination={destination}
             departureAt={departureAt}
             onZoomToSegment={onZoomToSegment}
+            onOpenBusSchedule={onOpenBusSchedule}
           />
         </ScrollView>
       ) : null}
@@ -1044,12 +1237,14 @@ function Timeline({
   destination,
   departureAt,
   onZoomToSegment,
+  onOpenBusSchedule,
 }: {
   option: TransitOption;
   origin: string;
   destination: string;
   departureAt: Date;
   onZoomToSegment: (segmentIndex: number) => void;
+  onOpenBusSchedule?: (segment: TransitSegment) => void;
 }) {
   // Times: we accumulate elapsed seconds from `departureAt` to render HH:MM next to each stop/location.
   const segs = option.segments;
@@ -1137,6 +1332,11 @@ function Timeline({
           isFirst={i === 0 || (prev && prev.kind === 'walk' && i === 1)}
           isTransferAfter={!!isTransferNext}
           onZoom={() => onZoomToSegment(i)}
+          onSchedule={
+            seg.fromStopId && onOpenBusSchedule
+              ? () => onOpenBusSchedule(seg)
+              : undefined
+          }
         />,
       );
 
@@ -1321,6 +1521,7 @@ function BusRow({
   isFirst: _isFirst,
   isTransferAfter: _isTransferAfter,
   onZoom,
+  onSchedule,
 }: {
   line: string;
   fromLabel: string;
@@ -1333,6 +1534,7 @@ function BusRow({
   isFirst: boolean;
   isTransferAfter: boolean;
   onZoom: () => void;
+  onSchedule?: () => void;
 }) {
   const minutes = Math.max(1, Math.round(durationSec / 60));
   const [stopsOpen, setStopsOpen] = useState(false);
@@ -1370,6 +1572,15 @@ function BusRow({
           >
             Маршрут {line}
           </Text>
+          {onSchedule ? (
+            <Pressable
+              onPress={onSchedule}
+              hitSlop={8}
+              className="h-8 w-8 items-center justify-center rounded-full bg-primary/10 active:bg-primary/20"
+            >
+              <CalendarClock size={16} color="#2563eb" />
+            </Pressable>
+          ) : null}
           <ChevronRight size={18} color="#999" />
         </Pressable>
         {/* Info row — expands inline stops list */}
